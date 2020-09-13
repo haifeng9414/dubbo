@@ -30,6 +30,7 @@ import static org.apache.dubbo.common.constants.CommonConstants.STUB_EVENT_KEY;
  * @export
  * @see ReferenceConfigBase
  */
+// 定义了针对consumer的一些公共的属性配置
 public abstract class AbstractReferenceConfig extends AbstractInterfaceConfig {
 
     private static final long serialVersionUID = -2786526984373031126L;

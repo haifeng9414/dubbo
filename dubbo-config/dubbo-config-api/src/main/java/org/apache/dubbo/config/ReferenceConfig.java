@@ -201,6 +201,7 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
         if (destroyed) {
             throw new IllegalStateException("The invoker of ReferenceConfig(" + url + ") has already destroyed!");
         }
+        // 如果当前引用为空，则先初始化
         if (ref == null) {
             init();
         }

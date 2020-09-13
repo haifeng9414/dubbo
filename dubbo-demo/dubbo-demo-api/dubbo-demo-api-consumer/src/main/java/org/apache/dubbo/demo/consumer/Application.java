@@ -39,12 +39,14 @@ public class Application {
 
     private static void runWithBootstrap() {
         ReferenceConfig<DemoService> reference = new ReferenceConfig<>();
+        // 设置当前引用的接口
         reference.setInterface(DemoService.class);
+        // 泛化接口调用方式主要用于客户端没有API接口及模型类元的情况，参数及返回值中的所有POJO均用Map表示，通常用于框架集成
         reference.setGeneric("true");
 
         DubboBootstrap bootstrap = DubboBootstrap.getInstance();
         bootstrap.application(new ApplicationConfig("dubbo-demo-api-consumer"))
-                .registry(new RegistryConfig("zookeeper://127.0.0.1:2181"))
+                .registry(new RegistryConfig("zookeeper://127.0.0.1:2181")) // RegistryConfig代表注册中心配置
                 .reference(reference)
                 .start();
 
@@ -53,6 +55,7 @@ public class Application {
         System.out.println(message);
 
         // generic invoke
+        // 泛化调用，不需要接口类型就能够调用方法
         GenericService genericService = (GenericService) demoService;
         Object genericInvokeResult = genericService.$invoke("sayHello", new String[] { String.class.getName() },
                 new Object[] { "dubbo generic invoke" });

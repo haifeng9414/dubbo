@@ -85,6 +85,7 @@ public class ReferenceAnnotationBeanPostProcessor extends AbstractAnnotationBean
      * {@link DubboReference @DubboReference} has been supported since 2.7.7
      */
     public ReferenceAnnotationBeanPostProcessor() {
+        // 带有以下3个注解的bean会被当前类处理
         super(DubboReference.class, Reference.class, com.alibaba.dubbo.config.annotation.Reference.class);
     }
 
@@ -131,8 +132,10 @@ public class ReferenceAnnotationBeanPostProcessor extends AbstractAnnotationBean
          */
         String referenceBeanName = getReferenceBeanName(attributes, injectedType);
 
+        // 获取指定的bean
         ReferenceBean referenceBean = buildReferenceBeanIfAbsent(referenceBeanName, attributes, injectedType);
 
+        // 如果bean存在于spring中并且没有被作为服务对外暴露
         boolean localServiceBean = isLocalServiceBean(referencedBeanName, referenceBean, attributes);
 
         prepareReferenceBean(referencedBeanName, referenceBean, localServiceBean);

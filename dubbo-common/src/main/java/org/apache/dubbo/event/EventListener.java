@@ -39,6 +39,7 @@ import static org.apache.dubbo.common.utils.ReflectUtils.findParameterizedTypes;
  */
 @SPI
 @FunctionalInterface
+// 事件监听接口
 public interface EventListener<E extends Event> extends java.util.EventListener, Prioritized {
 
     /**

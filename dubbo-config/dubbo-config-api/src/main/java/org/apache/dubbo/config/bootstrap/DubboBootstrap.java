@@ -195,10 +195,15 @@ public class DubboBootstrap extends GenericEventListener {
     }
 
     private DubboBootstrap() {
+        // 通过SPI获取ConfigManager实现类，默认org.apache.dubbo.config.context.ConfigManager
         configManager = ApplicationModel.getConfigManager();
+        // 通过SPI获取Environment实现类，默认org.apache.dubbo.common.config.Environment
         environment = ApplicationModel.getEnvironment();
 
+        // 执行Runtime.getRuntime().addShutdownHook添加DubboShutdownHook类作为hook
         DubboShutdownHook.getDubboShutdownHook().register();
+        // 向ShutdownHookCallbacks注册callback，DubboShutdownHook类作为hook被执行时实际上执行的是ShutdownHookCallbacks
+        // 中注册的那些callback
         ShutdownHookCallbacks.INSTANCE.addCallback(new ShutdownHookCallback() {
             @Override
             public void callback() throws Throwable {
@@ -516,6 +521,7 @@ public class DubboBootstrap extends GenericEventListener {
             return;
         }
 
+        // 通过Dubbo的SPI加载所有FrameworkExt接口的实现类，逐个调用initialize方法
         ApplicationModel.initFrameworkExts();
 
         startConfigCenter();

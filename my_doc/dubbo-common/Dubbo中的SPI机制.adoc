@@ -1,0 +1,84 @@
+Dubbo提供了一种扩展点加载机制，该机制从JDK标准的SPI扩展点发现机制加强而来，Dubbo改进了JDK标准的SPI的以下问题：
+- JDK标准的SPI会一次性实例化扩展点所有实现，如果有扩展实现初始化很耗时，但如果没用上也加载，会很浪费资源。
+- 如果扩展点加载失败，连扩展点的名称都拿不到了。比如：JDK标准的``ScriptEngine``，通过getName()获取脚本类型的名称，但如果RubyScriptEngine因为所依赖的jruby.jar不存在，导致RubyScriptEngine类加载失败，这个失败原因被吃掉了，和ruby对应不起来，当用户执行ruby脚本时，会报不支持ruby，而不是真正失败的原因。
+- 增加了对扩展点IoC和AOP的支持，一个扩展点可以直接setter注入其它扩展点。
+- JDK的SPI只能通过Iterator形式获取，不能根据某个参数来获取对应的实现类，而Dubbo可以根据参数获取指定的实现类。
+
+Dubbo的扩展点用来加载各种Dubbo支持的扩展点的实现类，使用方式是，在扩展类的jar包内放置扩展点配置文件``META-INF/dubbo/接口全限定名``，内容为：``配置名=扩展实现类全限定名``，多个实现类用换行符分隔，如对于Dubbo协议的扩展，在协议的实现jar包内放置文本文件：`META-INF/dubbo/org.apache.dubbo.rpc.Protocol`，内容为：
+----
+xxx=com.alibaba.xxx.XxxProtocol
+----
+
+有了上述配置后，就可以用该协议的实现：
+[xml]
+----
+<dubbo:protocol name="xxx" />
+----
+
+下面来看看Dubbo是如果实现扩展点加载的，实现过程主要在``ExtensionLoader``类，实现原理已经该该类的源码中注释了，这里用简单的话总结下``ExtensionLoader``类的实现。
+
+当某个接口上有``SPI``注解时，该接口就可以作为扩展点接口，每个扩展点接口都有一个对应的``ExtensionLoader``对象，当想要加载一个扩展点接口的实现类时，需要先获得扩展点接口的``ExtensionLoader``对象，如：
+----
+ExtensionLoader.getExtensionLoader(FrameworkExt.class)
+----
+
+当为某个扩展点接口创建``ExtensionLoader``对象后，就可以获取该接口的实现类，获取的实现其实很简单，通过ClassLoader扫描所有jar包下指定的文件夹内的接口的全类名文件的内容（这一过程是``ExtensionLoader``对象调用``LoadingStrategy``对象实现的），该文件定义了扩展点接口的实现类的name和实现类类名，如：
+
+.META-INF/dubbo/org.apache.dubbo.rpc.Protocol文件
+----
+filter=org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper
+listener=org.apache.dubbo.rpc.protocol.ProtocolListenerWrapper
+mock=org.apache.dubbo.rpc.support.MockProtocol
+----
+
+具体的加载过程可以看``ExtensionLoader``的``getExtensionClasses()``方法。
+
+在通过`getExtensionClasses()``方法获得所有实现类的name和类型后，就可以获得需要的实例了，这一过程实现在``ExtensionLoader``的``getExtension()``方法。
+
+获取实例过程主要涉及三种类型，一个是普通的扩展点实现类，一个是Wrapper、一个是适配器。Wrapper和适配器类型的扩展点实现类不实现具体的接口功能，而是分别提供了一些业务不相关的功能。
+
+对于Wrapper，所有Wrapper类型的实现类都会在``ExtensionLoader``对象创建一个普通的扩展点实现类时作为代理，将普通的扩展点实现类包裹在Wrapper中，以此实现类似动态代理的效果。
+
+对于适配器，主要用于避免硬编码dubbo内部调用时使用的实现类，通过适配器，可以根据URL在运行时决定使用哪个实现类，如果扩展点的某个实现类带有``@Adaptive``注解，则其会被视为适配器，如果不存在带有``@Adaptive``注解的实现类，则``ExtensionLoader``对象会为扩展点接口动态生产一个适配器实例，生产的适配器代码如下：
+[java]
+----
+package org.apache.dubbo.rpc.cluster;
+
+import org.apache.dubbo.common.extension.ExtensionLoader;
+
+public class Cluster$Adaptive implements org.apache.dubbo.rpc.cluster.Cluster {
+    public org.apache.dubbo.rpc.Invoker join(org.apache.dubbo.rpc.cluster.Directory arg0)
+            throws org.apache.dubbo.rpc.RpcException {
+        if (arg0 == null) {
+            throw new IllegalArgumentException("org.apache.dubbo.rpc.cluster.Directory argument == null");
+        }
+        if (arg0.getUrl() == null) {
+            throw new IllegalArgumentException("org.apache.dubbo.rpc.cluster.Directory argument getUrl() == null");
+        }
+        org.apache.dubbo.common.URL url = arg0.getUrl();
+        String extName = url.getParameter("cluster", "failover");
+        if (extName == null) {
+            throw new IllegalStateException(
+                    "Failed to get extension (org.apache.dubbo.rpc.cluster.Cluster) name from url (" + url.toString()
+                            + ") use keys([cluster])");
+        }
+        org.apache.dubbo.rpc.cluster.Cluster extension = (org.apache.dubbo.rpc.cluster.Cluster) ExtensionLoader
+                .getExtensionLoader(org.apache.dubbo.rpc.cluster.Cluster.class).getExtension(extName);
+        return extension.join(arg0);
+    }
+
+    public org.apache.dubbo.rpc.cluster.Cluster getCluster(java.lang.String arg0) {
+        throw new UnsupportedOperationException(
+                "The method public static org.apache.dubbo.rpc.cluster.Cluster org.apache.dubbo.rpc.cluster.Cluster"
+                        + ".getCluster(java.lang.String) of interface org.apache.dubbo.rpc.cluster.Cluster is not "
+                        + "adaptive method!");
+    }
+
+    public org.apache.dubbo.rpc.cluster.Cluster getCluster(java.lang.String arg0, boolean arg1) {
+        throw new UnsupportedOperationException(
+                "The method public static org.apache.dubbo.rpc.cluster.Cluster org.apache.dubbo.rpc.cluster.Cluster.getCluster(java.lang.String,boolean) of interface org.apache.dubbo.rpc.cluster.Cluster is not adaptive method!");
+    }
+}
+----
+
+扩展点接口的适配器通过``ExtensionLoader``对象的``getAdaptiveExtension()``方法获取。

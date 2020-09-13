@@ -16,6 +16,8 @@
  */
 package org.apache.dubbo.common.context;
 
+// 实现了空的Lifecycle接口，这样其他Lifecycle接口的实现类只要继承LifecycleAdapter，就可以选择实现Lifecycle
+// 接口的某些方法
 public abstract class LifecycleAdapter implements Lifecycle {
 
     @Override

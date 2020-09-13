@@ -92,6 +92,7 @@ public class DubboShutdownHook extends Thread {
         if (registered.compareAndSet(false, true)) {
             DubboShutdownHook dubboShutdownHook = getDubboShutdownHook();
             Runtime.getRuntime().addShutdownHook(dubboShutdownHook);
+            // 发送注册事件
             dispatch(new DubboShutdownHookRegisteredEvent(dubboShutdownHook));
         }
     }

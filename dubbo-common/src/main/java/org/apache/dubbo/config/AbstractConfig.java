@@ -51,6 +51,7 @@ import static org.apache.dubbo.common.utils.ReflectUtils.findMethodByMethodSigna
  *
  * @export
  */
+// 提供了各种工具方法
 public abstract class AbstractConfig implements Serializable {
 
     protected static final Logger logger = LoggerFactory.getLogger(AbstractConfig.class);
@@ -98,12 +99,14 @@ public abstract class AbstractConfig implements Serializable {
 
     public static String getTagName(Class<?> cls) {
         String tag = cls.getSimpleName();
+        // 如果className以"Config", "Bean", "ConfigBase"结尾，则去掉这个后缀
         for (String suffix : SUFFIXES) {
             if (tag.endsWith(suffix)) {
                 tag = tag.substring(0, tag.length() - suffix.length());
                 break;
             }
         }
+        // 将驼峰名改成-分割
         return StringUtils.camelToSplitName(tag, "-");
     }
 
@@ -120,23 +123,31 @@ public abstract class AbstractConfig implements Serializable {
         for (Method method : methods) {
             try {
                 String name = method.getName();
+                // 如果是getter方法
                 if (MethodUtils.isGetter(method)) {
+                    // 获取Parameter注解
                     Parameter parameter = method.getAnnotation(Parameter.class);
+                    // 返回值为object类型，或者Parameter注解的excluded属性为true则跳过处理
                     if (method.getReturnType() == Object.class || parameter != null && parameter.excluded()) {
                         continue;
                     }
                     String key;
+                    // 获取Parameter注解的key属性，如reference.filter
                     if (parameter != null && parameter.key().length() > 0) {
                         key = parameter.key();
                     } else {
+                        // 没有key属性，则根据方法名称解析key
                         key = calculatePropertyFromGetter(name);
                     }
+                    // 调用方法
                     Object value = method.invoke(config);
                     String str = String.valueOf(value).trim();
                     if (value != null && str.length() > 0) {
+                        // 使用URL编码
                         if (parameter != null && parameter.escaped()) {
                             str = URL.encode(str);
                         }
+                        // 将key和方法结果合并，以逗号隔开
                         if (parameter != null && parameter.append()) {
                             String pre = parameters.get(key);
                             if (pre != null && pre.length() > 0) {
@@ -146,12 +157,16 @@ public abstract class AbstractConfig implements Serializable {
                         if (prefix != null && prefix.length() > 0) {
                             key = prefix + "." + key;
                         }
+                        // 保存结果
                         parameters.put(key, str);
                     } else if (parameter != null && parameter.required()) {
+                        // 方法返回值为空则报错
                         throw new IllegalStateException(config.getClass().getSimpleName() + "." + key + " == null");
                     }
-                } else if (isParametersGetter(method)) {
+                } else if (isParametersGetter(method)) { // 如果方法名等于getParameters并且方法返回值为Map类型
+                    // 调用方法获取值
                     Map<String, String> map = (Map<String, String>) method.invoke(config, new Object[0]);
+                    // 将值保存到parameters
                     parameters.putAll(convert(map, prefix));
                 }
             } catch (Exception e) {

@@ -46,6 +46,7 @@ import static org.apache.dubbo.common.function.ThrowableFunction.execute;
  * @see EventListener
  * @since 2.7.5
  */
+// GenericEventListener类扩展了EventListener接口，其实现类可以实现多个接收Event类型的参数的方法
 public abstract class GenericEventListener implements EventListener<Event> {
 
     private final Method onEventMethod;
@@ -64,6 +65,7 @@ public abstract class GenericEventListener implements EventListener<Event> {
     private Map<Class<?>, Set<Method>> findHandleEventMethods() {
         // Event class for key, the eventMethods' Set as value
         Map<Class<?>, Set<Method>> eventMethods = new HashMap<>();
+        // 遍历当前类的所有方法，过滤掉参数不为Event类型的方法，剩下的方法以参数类型为key，method为vale保存到map返回
         of(getClass().getMethods())
                 .filter(this::isHandleEventMethod)
                 .forEach(method -> {

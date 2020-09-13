@@ -25,6 +25,7 @@ import java.util.Map;
  *
  * @export
  */
+// 定义了一些针对method对象的属性配置
 public abstract class AbstractMethodConfig extends AbstractConfig {
 
     private static final long serialVersionUID = 1L;

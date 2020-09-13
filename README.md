@@ -1,3 +1,5 @@
+[笔记](my_doc/README.adoc)
+
 # Apache Dubbo Project
 
 [![Build Status](https://travis-ci.org/apache/dubbo.svg?branch=master)](https://travis-ci.org/apache/dubbo)

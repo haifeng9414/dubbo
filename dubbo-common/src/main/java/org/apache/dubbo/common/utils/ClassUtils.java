@@ -139,6 +139,7 @@ public class ClassUtils {
      */
     public static ClassLoader getClassLoader(Class<?> clazz) {
         ClassLoader cl = null;
+        // 下面的实现是经典的获取ClassLoader的方式
         try {
             cl = Thread.currentThread().getContextClassLoader();
         } catch (Throwable ex) {

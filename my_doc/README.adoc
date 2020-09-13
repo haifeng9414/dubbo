@@ -1,0 +1,3 @@
+= 笔记
+
+link:dubbo-common/Dubbo中的SPI机制.adoc[Dubbo中的SPI机制]

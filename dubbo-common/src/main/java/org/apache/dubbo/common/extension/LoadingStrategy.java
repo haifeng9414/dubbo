@@ -22,10 +22,12 @@ public interface LoadingStrategy extends Prioritized {
 
     String directory();
 
+    // 是否优先使用ExtensionLoader类的ClassLoader加载资源文件
     default boolean preferExtensionClassLoader() {
         return false;
     }
 
+    // 加载Dubbo的SPI扩展点时跳过指定包下的实现类
     default String[] excludedPackages() {
         return null;
     }
