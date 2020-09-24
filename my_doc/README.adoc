@@ -1,3 +1,8 @@
 = 笔记
 
-link:dubbo-common/Dubbo中的SPI机制.adoc[Dubbo中的SPI机制]
+== dubbo-common
+- link:dubbo-common/Dubbo中的SPI机制.adoc[Dubbo中的SPI机制]
+
+== dubbo-registry
+- link:dubbo-registry/注册中心实现.adoc[注册中心实现]
+

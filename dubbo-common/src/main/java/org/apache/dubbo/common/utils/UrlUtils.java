@@ -391,6 +391,7 @@ public class UrlUtils {
     }
 
     public static boolean isMatch(URL consumerUrl, URL providerUrl) {
+        // 获取url的interface参数，该参数表示服务的接口名称
         String consumerInterface = consumerUrl.getServiceInterface();
         String providerInterface = providerUrl.getServiceInterface();
         //FIXME accept providerUrl with '*' as interface name, after carefully thought about all possible scenarios I think it's ok to add this condition.
@@ -400,6 +401,8 @@ public class UrlUtils {
             return false;
         }
 
+        // 比较url的category参数，对于服务提供者来说，category表示服务的分类，缺省类别为providers
+        // 对于服务消费者来说，category=xxx时表示只接收指定分类的通知，多个分类用逗号分隔，并允许星号通配，表示订阅所有分类数据
         if (!isMatchCategory(providerUrl.getParameter(CATEGORY_KEY, DEFAULT_CATEGORY),
                 consumerUrl.getParameter(CATEGORY_KEY, DEFAULT_CATEGORY))) {
             return false;
@@ -409,6 +412,10 @@ public class UrlUtils {
             return false;
         }
 
+        // 获取url的group、version、classifier参数
+        // group表示分组，当服务提供者或者服务消费者有多个实现时，可以用这个属性作区分
+        // version表示服务提供者或服务消费者的版本
+        // classifier不知道有啥用
         String consumerGroup = consumerUrl.getParameter(GROUP_KEY);
         String consumerVersion = consumerUrl.getParameter(VERSION_KEY);
         String consumerClassifier = consumerUrl.getParameter(CLASSIFIER_KEY, ANY_VALUE);
@@ -416,6 +423,8 @@ public class UrlUtils {
         String providerGroup = providerUrl.getParameter(GROUP_KEY);
         String providerVersion = providerUrl.getParameter(VERSION_KEY);
         String providerClassifier = providerUrl.getParameter(CLASSIFIER_KEY, ANY_VALUE);
+
+        // 分别比较这三个参数
         return (ANY_VALUE.equals(consumerGroup) || StringUtils.isEquals(consumerGroup, providerGroup) || StringUtils.isContains(consumerGroup, providerGroup))
                 && (ANY_VALUE.equals(consumerVersion) || StringUtils.isEquals(consumerVersion, providerVersion))
                 && (consumerClassifier == null || ANY_VALUE.equals(consumerClassifier) || StringUtils.isEquals(consumerClassifier, providerClassifier));

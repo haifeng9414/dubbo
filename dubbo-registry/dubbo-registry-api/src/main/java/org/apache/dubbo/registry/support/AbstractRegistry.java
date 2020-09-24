@@ -83,21 +83,40 @@ public abstract class AbstractRegistry implements Registry {
     // File cache timing writing
     private final ExecutorService registryCacheExecutor = Executors.newFixedThreadPool(1, new NamedThreadFactory("DubboSaveRegistryCache", true));
     // Is it synchronized to save the file
+    // 是否同步的保存本地文件，false表示异步保存
     private boolean syncSaveFile;
+    // 本地文件修改时间
     private final AtomicLong lastCacheChanged = new AtomicLong();
     private final AtomicInteger savePropertiesRetryTimes = new AtomicInteger();
+    // 已注册的URL，可能是服务提供者的，也可以是服务消费者的
     private final Set<URL> registered = new ConcurrentHashSet<>();
+    // 消费者url订阅的监听器集合
     private final ConcurrentMap<URL, Set<NotifyListener>> subscribed = new ConcurrentHashMap<>();
+    // 第一个key是消费者的URL，对应的就是哪个消费者
+    // value是一个map集合，该map集合的key是分类的意思，例如providers、routes等，value就是消费者已经被通知的服务URL集合
     private final ConcurrentMap<URL, Map<String, List<URL>>> notified = new ConcurrentHashMap<>();
+    // 当前注册中心对应的url
     private URL registryUrl;
     // Local disk cache file
     private File file;
 
     public AbstractRegistry(URL url) {
+        // 保存注册中心的url
         setUrl(url);
+        // 根据url参数判断是否缓存到本地
         if (url.getParameter(REGISTRY__LOCAL_FILE_CACHE_ENABLED, true)) {
             // Start file save timer
+            // 根据url参数判断是否同步保存文件的配置，默认为false，即异步
             syncSaveFile = url.getParameter(REGISTRY_FILESAVE_SYNC_KEY, false);
+            // 获取当前url对应的文件名称，如/Users/donghaifeng/.dubbo/dubbo-registry-dubbo-demo-api-consumer-127.0.0.1-2181.cache
+            // 文件内容如：
+            /*
+            #Dubbo Registry Cache
+            #Sun Sep 13 21:39:35 CST 2020
+            org.apache.dubbo.demo.DemoService=empty\://192.168.1.10/org.apache.dubbo.rpc.service.GenericService?application\=dubbo-demo-api-consumer&category\=routers&dubbo\=2.0.2&generic\=true&interface\=org.apache.dubbo.demo.DemoService&pid\=66896&side\=consumer&sticky\=false&timestamp\=1600004368320 empty\://192.168.1.10/org.apache.dubbo.rpc.service.GenericService?application\=dubbo-demo-api-consumer&category\=configurators&dubbo\=2.0.2&generic\=true&interface\=org.apache.dubbo.demo.DemoService&pid\=66896&side\=consumer&sticky\=false&timestamp\=1600004368320 empty\://192.168.1.10/org.apache.dubbo.rpc.service.GenericService?application\=dubbo-demo-api-consumer&category\=providers&dubbo\=2.0.2&generic\=true&interface\=org.apache.dubbo.demo.DemoService&pid\=66896&side\=consumer&sticky\=false&timestamp\=1600004368320
+
+            org.apache.dubbo.demo.DemoService是key，后面一大串是value
+             */
             String defaultFilename = System.getProperty("user.home") + "/.dubbo/dubbo-registry-" + url.getParameter(APPLICATION_KEY) + "-" + url.getAddress().replaceAll(":", "-") + ".cache";
             String filename = url.getParameter(FILE_KEY, defaultFilename);
             File file = null;
@@ -112,7 +131,9 @@ public abstract class AbstractRegistry implements Registry {
             this.file = file;
             // When starting the subscription center,
             // we need to read the local cache file for future Registry fault tolerance processing.
+            // 从file中加载配置
             loadProperties();
+            // getBackupUrls方法返回根据url中的backup参数的值解析而来的url对象
             notify(url.getBackupUrls());
         }
     }
@@ -163,6 +184,7 @@ public abstract class AbstractRegistry implements Registry {
     }
 
     public void doSaveProperties(long version) {
+        // 老版本直接忽略
         if (version < lastCacheChanged.get()) {
             return;
         }
@@ -175,6 +197,7 @@ public abstract class AbstractRegistry implements Registry {
             if (!lockfile.exists()) {
                 lockfile.createNewFile();
             }
+            // 使用文件锁
             try (RandomAccessFile raf = new RandomAccessFile(lockfile, "rw");
                  FileChannel channel = raf.getChannel()) {
                 FileLock lock = channel.tryLock();
@@ -187,6 +210,7 @@ public abstract class AbstractRegistry implements Registry {
                         file.createNewFile();
                     }
                     try (FileOutputStream outputFile = new FileOutputStream(file)) {
+                        // 保存properties到本地文件
                         properties.store(outputFile, "Dubbo Registry Cache");
                     }
                 } finally {
@@ -194,16 +218,20 @@ public abstract class AbstractRegistry implements Registry {
                 }
             }
         } catch (Throwable e) {
+            // 统计失败次数
             savePropertiesRetryTimes.incrementAndGet();
+            // 3次后告警并重置失败次数
             if (savePropertiesRetryTimes.get() >= MAX_RETRY_TIMES_SAVE_PROPERTIES) {
                 logger.warn("Failed to save registry cache file after retrying " + MAX_RETRY_TIMES_SAVE_PROPERTIES + " times, cause: " + e.getMessage(), e);
                 savePropertiesRetryTimes.set(0);
                 return;
             }
+            // 如果版本小于lastCacheChanged说明被其他进程修改了
             if (version < lastCacheChanged.get()) {
                 savePropertiesRetryTimes.set(0);
                 return;
             } else {
+                // retry指定版本
                 registryCacheExecutor.execute(new SaveProperties(lastCacheChanged.incrementAndGet()));
             }
             logger.warn("Failed to save registry cache file, will retry, cause: " + e.getMessage(), e);
@@ -233,16 +261,22 @@ public abstract class AbstractRegistry implements Registry {
         }
     }
 
+    // 获得内存缓存properties中相关value，并且返回为一个集合
     public List<URL> getCacheUrls(URL url) {
         for (Map.Entry<Object, Object> entry : properties.entrySet()) {
+            // key为某个分类，例如服务提供者分类
             String key = (String) entry.getKey();
+            // value为某个分类的列表，例如服务提供者列表
             String value = (String) entry.getValue();
+            // 获取properties中key等于url.getServiceKey()的
             if (StringUtils.isNotEmpty(key) && key.equals(url.getServiceKey())
                     && (Character.isLetter(key.charAt(0)) || key.charAt(0) == '_')
                     && StringUtils.isNotEmpty(value)) {
+                // 以空白分割value
                 String[] arr = value.trim().split(URL_SPLIT);
                 List<URL> urls = new ArrayList<>();
                 for (String u : arr) {
+                    // 根据value的参数创建url对象保存到urls中
                     urls.add(URL.valueOf(u));
                 }
                 return urls;
@@ -254,6 +288,7 @@ public abstract class AbstractRegistry implements Registry {
     @Override
     public List<URL> lookup(URL url) {
         List<URL> result = new ArrayList<>();
+        // 获取url订阅的所有被通知的服务URL集合
         Map<String, List<URL>> notifiedUrls = getNotified().get(url);
         if (CollectionUtils.isNotEmptyMap(notifiedUrls)) {
             for (List<URL> urls : notifiedUrls.values()) {
@@ -266,6 +301,8 @@ public abstract class AbstractRegistry implements Registry {
         } else {
             final AtomicReference<List<URL>> reference = new AtomicReference<>();
             NotifyListener listener = reference::set;
+            // 订阅服务，就是消费者url订阅已经注册在注册中心的服务
+            // subscribe方法实际上会被子类重写
             subscribe(url, listener); // Subscribe logic guarantees the first notify to return
             List<URL> urls = reference.get();
             if (CollectionUtils.isNotEmpty(urls)) {
@@ -333,6 +370,7 @@ public abstract class AbstractRegistry implements Registry {
         }
     }
 
+    // 恢复，在注册中心断开，重连成功的时候，会恢复注册和订阅
     protected void recover() throws Exception {
         // register
         Set<URL> recoverRegistered = new HashSet<>(getRegistered());
@@ -367,6 +405,7 @@ public abstract class AbstractRegistry implements Registry {
         for (Map.Entry<URL, Set<NotifyListener>> entry : getSubscribed().entrySet()) {
             URL url = entry.getKey();
 
+            // 判断当前url是否匹配服务提供者的url
             if (!UrlUtils.isMatch(url, urls.get(0))) {
                 continue;
             }
@@ -409,6 +448,7 @@ public abstract class AbstractRegistry implements Registry {
         // keep every provider's category.
         Map<String, List<URL>> result = new HashMap<>();
         for (URL u : urls) {
+            // 将服务提供者的url按照category参数分类
             if (UrlUtils.isMatch(url, u)) {
                 String category = u.getParameter(CATEGORY_KEY, DEFAULT_CATEGORY);
                 List<URL> categoryList = result.computeIfAbsent(category, k -> new ArrayList<>());
@@ -422,6 +462,7 @@ public abstract class AbstractRegistry implements Registry {
         for (Map.Entry<String, List<URL>> entry : result.entrySet()) {
             String category = entry.getKey();
             List<URL> categoryList = entry.getValue();
+            // 将通知的分类和对应的列表保存到notified
             categoryNotified.put(category, categoryList);
             listener.notify(categoryList);
             // We will update our cache file after each notification.
@@ -437,6 +478,7 @@ public abstract class AbstractRegistry implements Registry {
 
         try {
             StringBuilder buf = new StringBuilder();
+            // 保存消费者url对应的已经被通知的服务提供者url的集合
             Map<String, List<URL>> categoryNotified = notified.get(url);
             if (categoryNotified != null) {
                 for (List<URL> us : categoryNotified.values()) {
@@ -450,6 +492,7 @@ public abstract class AbstractRegistry implements Registry {
             }
             properties.setProperty(url.getServiceKey(), buf.toString());
             long version = lastCacheChanged.incrementAndGet();
+            // 同步或者异步保存文件
             if (syncSaveFile) {
                 doSaveProperties(version);
             } else {
@@ -468,8 +511,10 @@ public abstract class AbstractRegistry implements Registry {
         Set<URL> destroyRegistered = new HashSet<>(getRegistered());
         if (!destroyRegistered.isEmpty()) {
             for (URL url : new HashSet<>(getRegistered())) {
+                // dynamic参数为true的会自动注册，只注销自动注册的
                 if (url.getParameter(DYNAMIC_KEY, true)) {
                     try {
+                        // 取消注册服务提供者
                         unregister(url);
                         if (logger.isInfoEnabled()) {
                             logger.info("Destroy unregister url " + url);
@@ -486,6 +531,7 @@ public abstract class AbstractRegistry implements Registry {
                 URL url = entry.getKey();
                 for (NotifyListener listener : entry.getValue()) {
                     try {
+                        // 通知取消订阅事件
                         unsubscribe(url, listener);
                         if (logger.isInfoEnabled()) {
                             logger.info("Destroy unsubscribe url " + url);
@@ -496,9 +542,11 @@ public abstract class AbstractRegistry implements Registry {
                 }
             }
         }
+        // 将当前实例从AbstractRegistryFactory的REGISTRIES属性中删除
         AbstractRegistryFactory.removeDestroyedRegistry(this);
     }
 
+    // 根据注册中心的accepts参数判断是否支持指定url注册
     protected boolean acceptable(URL urlToRegistry) {
         String pattern = registryUrl.getParameter(ACCEPTS_KEY);
         if (StringUtils.isEmpty(pattern)) {

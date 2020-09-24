@@ -228,23 +228,28 @@ public abstract class FailbackRegistry extends AbstractRegistry {
 
     @Override
     public void register(URL url) {
+        // 判断当前的注册中心是否支持传入的url的protocol
         if (!acceptable(url)) {
             logger.info("URL " + url + " will not be registered to Registry. Registry " + url + " does not accept service of this protocol type.");
             return;
         }
+        // 保存url到registered属性
         super.register(url);
+        // 将url从failedRegistered中删除
         removeFailedRegistered(url);
+        // 将url从failedUnregistered中删除
         removeFailedUnregistered(url);
         try {
             // Sending a registration request to the server side
+            // 发送注册请求，由子类实现
             doRegister(url);
         } catch (Exception e) {
             Throwable t = e;
 
             // If the startup detection is opened, the Exception is thrown directly.
-            boolean check = getUrl().getParameter(Constants.CHECK_KEY, true)
-                    && url.getParameter(Constants.CHECK_KEY, true)
-                    && !CONSUMER_PROTOCOL.equals(url.getProtocol());
+            boolean check = getUrl().getParameter(Constants.CHECK_KEY, true) // 获取注册中心url的check属性
+                    && url.getParameter(Constants.CHECK_KEY, true) // 获取当前url的check属性
+                    && !CONSUMER_PROTOCOL.equals(url.getProtocol()); // protocol不等于consumer
             boolean skipFailback = t instanceof SkipFailbackWrapperException;
             if (check || skipFailback) {
                 if (skipFailback) {
@@ -256,12 +261,15 @@ public abstract class FailbackRegistry extends AbstractRegistry {
             }
 
             // Record a failed registration request to a failed list, retry regularly
+            // 保存url到failedRegistered，并创建FailedRegisteredTask对象，调用HashedWheelTimer的newTimeout方法在一段时间后重试
             addFailedRegistered(url);
         }
     }
 
     @Override
+    // 重新注册url
     public void reExportRegister(URL url) {
+        // 判断当前的注册中心是否支持传入的url的protocol
         if (!acceptable(url)) {
             logger.info("URL " + url + " will not be registered to Registry. Registry " + url + " does not accept service of this protocol type.");
             return;
@@ -281,8 +289,11 @@ public abstract class FailbackRegistry extends AbstractRegistry {
 
     @Override
     public void unregister(URL url) {
+        // 注销url
         super.unregister(url);
+        // 将url从failedRegistered中删除
         removeFailedRegistered(url);
+        // 将url从failedUnregistered中删除
         removeFailedUnregistered(url);
         try {
             // Sending a cancellation request to the server side
@@ -305,11 +316,13 @@ public abstract class FailbackRegistry extends AbstractRegistry {
             }
 
             // Record a failed registration request to a failed list, retry regularly
+            // 添加重试任务
             addFailedUnregistered(url);
         }
     }
 
     @Override
+    // 重新注销url
     public void reExportUnregister(URL url) {
         super.unregister(url);
         removeFailedRegistered(url);
@@ -327,6 +340,7 @@ public abstract class FailbackRegistry extends AbstractRegistry {
     @Override
     public void subscribe(URL url, NotifyListener listener) {
         super.subscribe(url, listener);
+        // 从failedUnsubscribed和failedNotified中删除url，取消url的重试注册任务
         removeFailedSubscribed(url, listener);
         try {
             // Sending a subscription request to the server side
@@ -334,8 +348,10 @@ public abstract class FailbackRegistry extends AbstractRegistry {
         } catch (Exception e) {
             Throwable t = e;
 
+            // 获取消费者url对应的被通知的服务提供者url列表
             List<URL> urls = getCacheUrls(url);
             if (CollectionUtils.isNotEmpty(urls)) {
+                // 逐个通知
                 notify(url, listener, urls);
                 logger.error("Failed to subscribe " + url + ", Using cached list: " + urls + " from cache file: " + getUrl().getParameter(FILE_KEY, System.getProperty("user.home") + "/dubbo-registry-" + url.getHost() + ".cache") + ", cause: " + t.getMessage(), t);
             } else {
@@ -354,12 +370,14 @@ public abstract class FailbackRegistry extends AbstractRegistry {
             }
 
             // Record a failed registration request to a failed list, retry regularly
+            // 添加重试任务
             addFailedSubscribed(url, listener);
         }
     }
 
     @Override
     public void unsubscribe(URL url, NotifyListener listener) {
+        // 和上面类似
         super.unsubscribe(url, listener);
         removeFailedSubscribed(url, listener);
         try {
@@ -416,6 +434,7 @@ public abstract class FailbackRegistry extends AbstractRegistry {
                 logger.info("Recover register url " + recoverRegistered);
             }
             for (URL url : recoverRegistered) {
+                // 为每个url创建重试注册的任务
                 addFailedRegistered(url);
             }
         }
@@ -428,6 +447,7 @@ public abstract class FailbackRegistry extends AbstractRegistry {
             for (Map.Entry<URL, Set<NotifyListener>> entry : recoverSubscribed.entrySet()) {
                 URL url = entry.getKey();
                 for (NotifyListener listener : entry.getValue()) {
+                    // 为每个url创建重试订阅的任务
                     addFailedSubscribed(url, listener);
                 }
             }

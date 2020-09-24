@@ -150,8 +150,10 @@ public class DubboBootstrap extends GenericEventListener {
 
     private final ExecutorRepository executorRepository = getExtensionLoader(ExecutorRepository.class).getDefaultExtension();
 
+    // 默认实现为org.apache.dubbo.config.context.ConfigManager
     private final ConfigManager configManager;
 
+    // 默认实现为org.apache.dubbo.common.config.Environment
     private final Environment environment;
 
     private ReferenceConfigCache cache;
@@ -604,8 +606,10 @@ public class DubboBootstrap extends GenericEventListener {
 
     private void startConfigCenter() {
 
+        // 设置配置中心
         useRegistryAsConfigCenterIfNecessary();
 
+        // 获取配置中心的配置
         Collection<ConfigCenterConfig> configCenters = configManager.getConfigCenters();
 
         // check Config Center

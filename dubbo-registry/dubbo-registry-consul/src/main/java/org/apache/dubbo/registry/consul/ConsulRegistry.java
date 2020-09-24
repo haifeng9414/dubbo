@@ -74,9 +74,11 @@ public class ConsulRegistry extends FailbackRegistry {
     private static final Logger logger = LoggerFactory.getLogger(ConsulRegistry.class);
 
     private ConsulClient client;
+    // 检查实例是否健康的时间间隔，默认2s
     private long checkPassInterval;
     private ExecutorService notifierExecutor = newCachedThreadPool(
             new NamedThreadFactory("dubbo-consul-notifier", true));
+    // key已经订阅的服务消费者的url，value为为url创建的健康检查线程
     private ConcurrentMap<URL, ConsulNotifier> notifiers = new ConcurrentHashMap<>();
     private ScheduledExecutorService ttlConsulCheckExecutor;
     /**
@@ -86,6 +88,7 @@ public class ConsulRegistry extends FailbackRegistry {
 
 
     public ConsulRegistry(URL url) {
+        // 注册当前注册中心的url
         super(url);
         token = url.getParameter(TOKEN_KEY, (String) null);
         String host = url.getHost();
@@ -93,22 +96,26 @@ public class ConsulRegistry extends FailbackRegistry {
         client = new ConsulClient(host, port);
         checkPassInterval = url.getParameter(CHECK_PASS_INTERVAL, DEFAULT_CHECK_PASS_INTERVAL);
         ttlConsulCheckExecutor = new ScheduledThreadPoolExecutor(1, new NamedThreadFactory("Ttl-Consul-Check-Executor", true));
+        // 开启定时健康检查
         ttlConsulCheckExecutor.scheduleAtFixedRate(this::checkPass, checkPassInterval / 8,
                 checkPassInterval / 8, TimeUnit.MILLISECONDS);
     }
 
     @Override
     public void register(URL url) {
+        // 消费者不需要注册到consul就能获取服务信息
         if (isConsumerSide(url)) {
             return;
         }
 
+        // 服务提供者需要注册到consul
         super.register(url);
     }
 
     @Override
     public void doRegister(URL url) {
         if (token == null) {
+            // 根据url生成NewService请求并注册到consul
             client.agentServiceRegister(buildService(url));
         } else {
             client.agentServiceRegister(buildService(url), token);
@@ -117,6 +124,7 @@ public class ConsulRegistry extends FailbackRegistry {
 
     @Override
     public void unregister(URL url) {
+        // 同上
         if (isConsumerSide(url)) {
             return;
         }
@@ -126,6 +134,7 @@ public class ConsulRegistry extends FailbackRegistry {
 
     @Override
     public void doUnregister(URL url) {
+        // 同上
         if (token == null) {
             client.agentServiceDeregister(buildId(url));
         } else {
@@ -135,6 +144,7 @@ public class ConsulRegistry extends FailbackRegistry {
 
     @Override
     public void subscribe(URL url, NotifyListener listener) {
+        // 服务提供者不需要订阅
         if (isProviderSide(url)) {
             return;
         }
@@ -146,19 +156,28 @@ public class ConsulRegistry extends FailbackRegistry {
     public void doSubscribe(URL url, NotifyListener listener) {
         Long index;
         List<URL> urls;
+        // 如果serviceInterface是*，则表示需要订阅所有服务
         if (ANY_VALUE.equals(url.getServiceInterface())) {
+            // 获取所有服务列表
             Response<Map<String, List<String>>> response = getAllServices(-1, buildWatchTimeout(url));
+            // 保存当前版本号
             index = response.getConsulIndex();
+            // 遍历获取到的服务列表，逐个调用client.getHealthServices方法获取HealthService对象，如果服务在consul中不存在或者
+            // 状态为非健康的，将返回null
             List<HealthService> services = getHealthServices(response.getValue());
+            // 遍历健康的服务，转换成url
             urls = convert(services, url);
         } else {
+            // 获取指定服务的健康状态
             String service = url.getServiceInterface();
             Response<List<HealthService>> response = getHealthServices(service, -1, buildWatchTimeout(url));
             index = response.getConsulIndex();
             urls = convert(response.getValue(), url);
         }
 
+        // 向listener通知当前健康的服务列表
         notify(url, listener, urls);
+        // 创建一个线程，不断的watch当前消费者订阅的服务提供者状态
         ConsulNotifier notifier = notifiers.computeIfAbsent(url, k -> new ConsulNotifier(url, index));
         notifierExecutor.submit(notifier);
     }
@@ -338,9 +357,11 @@ public class ConsulRegistry extends FailbackRegistry {
         @Override
         public void run() {
             while (this.running) {
+                // 如果订阅的是所有服务提供者
                 if (ANY_VALUE.equals(url.getServiceInterface())) {
                     processServices();
                 } else {
+                    // 如果只订阅了某个服务提供者
                     processService();
                 }
             }
