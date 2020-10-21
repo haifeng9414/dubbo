@@ -28,6 +28,7 @@ import java.util.Arrays;
  * @see org.apache.dubbo.config.ProtocolConfig
  * @see ServiceConfigBase
  */
+// 表示服务提供者的缺省配置
 public class ProviderConfig extends AbstractServiceConfig {
 
     private static final long serialVersionUID = 6913423882496634749L;

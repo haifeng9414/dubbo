@@ -39,6 +39,7 @@ import static org.apache.dubbo.common.constants.CommonConstants.DUBBO;
  *
  * @export
  */
+// 定义了特定服务提供者的配置
 public abstract class ServiceConfigBase<T> extends AbstractServiceConfig {
 
     private static final long serialVersionUID = 3033787999037024738L;
@@ -51,11 +52,13 @@ public abstract class ServiceConfigBase<T> extends AbstractServiceConfig {
     /**
      * The interface class of the exported service
      */
+    // 保存服务提供者对应的接口类型
     protected Class<?> interfaceClass;
 
     /**
      * The reference of the interface implementation
      */
+    // 保存服务提供者对应的实现类
     protected T ref;
 
     /**
@@ -76,6 +79,7 @@ public abstract class ServiceConfigBase<T> extends AbstractServiceConfig {
     /**
      * whether it is a GenericService
      */
+    // 标记是否为泛化调用调用
     protected volatile String generic;
 
     protected ServiceMetadata serviceMetadata;
@@ -209,6 +213,7 @@ public abstract class ServiceConfigBase<T> extends AbstractServiceConfig {
     }
 
     public void completeCompoundConfigs() {
+        // 将ProviderConfig对象的配置设置到当前对象
         super.completeCompoundConfigs(provider);
         if (provider != null) {
             if (protocols == null) {

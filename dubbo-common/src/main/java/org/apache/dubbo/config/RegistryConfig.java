@@ -34,6 +34,7 @@ import static org.apache.dubbo.config.Constants.REGISTRIES_SUFFIX;
  *
  * @export
  */
+// 定义了一个注册中心相关的配置
 public class RegistryConfig extends AbstractConfig {
 
     public static final String NO_AVAILABLE = "N/A";
@@ -215,6 +216,7 @@ public class RegistryConfig extends AbstractConfig {
                 URL url = URL.valueOf(address);
 
                 // Refactor since 2.7.8
+                // 将url的下面这些参数设置到当前RegistryConfig对象
                 updatePropertyIfAbsent(this::getUsername, this::setUsername, url.getUsername());
                 updatePropertyIfAbsent(this::getPassword, this::setPassword, url.getPassword());
                 updatePropertyIfAbsent(this::getProtocol, this::setProtocol, url.getProtocol());
@@ -229,6 +231,7 @@ public class RegistryConfig extends AbstractConfig {
                 if (CollectionUtils.isNotEmptyMap(params)) {
                     params.remove(BACKUP_KEY);
                 }
+                // 将params保存到parameters属性
                 updateParameters(params);
             } catch (Exception ignored) {
             }

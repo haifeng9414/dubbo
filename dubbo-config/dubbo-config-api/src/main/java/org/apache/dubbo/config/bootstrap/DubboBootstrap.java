@@ -150,7 +150,7 @@ public class DubboBootstrap extends GenericEventListener {
 
     private final ExecutorRepository executorRepository = getExtensionLoader(ExecutorRepository.class).getDefaultExtension();
 
-    // 默认实现为org.apache.dubbo.config.context.ConfigManager
+    // 默认实现为org.apache.dubbo.config.context.ConfigManager，ConfigManager用于缓存当前JVM中所有AbstractConfig接口的实现类
     private final ConfigManager configManager;
 
     // 默认实现为org.apache.dubbo.common.config.Environment
@@ -203,12 +203,15 @@ public class DubboBootstrap extends GenericEventListener {
         environment = ApplicationModel.getEnvironment();
 
         // 执行Runtime.getRuntime().addShutdownHook添加DubboShutdownHook类作为hook
+        // 使得DubboShutdownHook对象在JVM关闭时调用其持有的各个ShutdownHookCallback对象的callback方法，同时发送DubboServiceDestroyedEvent
+        // 事件，通知感兴趣的EventListener
         DubboShutdownHook.getDubboShutdownHook().register();
         // 向ShutdownHookCallbacks注册callback，DubboShutdownHook类作为hook被执行时实际上执行的是ShutdownHookCallbacks
         // 中注册的那些callback
         ShutdownHookCallbacks.INSTANCE.addCallback(new ShutdownHookCallback() {
             @Override
             public void callback() throws Throwable {
+                // JVM关闭时执行
                 DubboBootstrap.this.destroy();
             }
         });
@@ -528,17 +531,23 @@ public class DubboBootstrap extends GenericEventListener {
 
         startConfigCenter();
 
+        // 初始化RegistryConfig和ProtocolConfig的配置
         loadRemoteConfigs();
 
+        // 初始化元数据中心、ProviderConfig、ConsumerConfig配置
         checkGlobalConfigs();
 
         // @since 2.7.8
+        // 初始化MetadataReport对象
         startMetadataCenter();
 
+        // 初始化WritableMetadataService对象
         initMetadataService();
 
+        // 初始化MetadataServiceExporter对象
         initMetadataServiceExports();
 
+        // 将当前DubboBootstrap实例添加到EventDispatcher的listener列表中
         initEventListener();
 
         if (logger.isInfoEnabled()) {
@@ -606,7 +615,7 @@ public class DubboBootstrap extends GenericEventListener {
 
     private void startConfigCenter() {
 
-        // 设置配置中心
+        // 遍历能够作为配置中心的注册中心，根据注册中心创建配置中心的配置
         useRegistryAsConfigCenterIfNecessary();
 
         // 获取配置中心的配置
@@ -834,6 +843,7 @@ public class DubboBootstrap extends GenericEventListener {
     private void loadRemoteConfigs() {
         // registry ids to registry configs
         List<RegistryConfig> tmpRegistries = new ArrayList<>();
+        // 从配置中心获取注册中心id
         Set<String> registryIds = configManager.getRegistryIds();
         registryIds.forEach(id -> {
             if (tmpRegistries.stream().noneMatch(reg -> reg.getId().equals(id))) {
@@ -1260,6 +1270,7 @@ public class DubboBootstrap extends GenericEventListener {
     public void destroy() {
         if (destroyLock.tryLock()) {
             try {
+                // 调用所有Registry和Protocol的destroy方法
                 DubboShutdownHook.destroyAll();
 
                 if (started.compareAndSet(true, false)

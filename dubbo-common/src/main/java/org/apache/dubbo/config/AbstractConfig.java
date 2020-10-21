@@ -475,6 +475,8 @@ public abstract class AbstractConfig implements Serializable {
         this.prefix = prefix;
     }
 
+    // 组合各种配置到CompositeConfiguration对象，遍历当前对象的setter方法，通过setter方法将CompositeConfiguration对象的配置保存到
+    // 当前对象的对应属性
     public void refresh() {
         Environment env = ApplicationModel.getEnvironment();
         try {

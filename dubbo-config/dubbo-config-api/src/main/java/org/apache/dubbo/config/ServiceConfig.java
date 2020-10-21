@@ -181,18 +181,22 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
     }
 
     public synchronized void export() {
+        // 判断是否允许export当前服务者，默认为true
         if (!shouldExport()) {
             return;
         }
 
         if (bootstrap == null) {
+            // 获取DubboBootstrap对象，DubboBootstrap对象是单例的
             bootstrap = DubboBootstrap.getInstance();
             bootstrap.initialize();
         }
 
+        // 初始化各种配置并检查配置是否合法
         checkAndUpdateSubConfigs();
 
         //init serviceMetadata
+        // 保存当前服务的元信息
         serviceMetadata.setVersion(getVersion());
         serviceMetadata.setGroup(getGroup());
         serviceMetadata.setDefaultGroup(getGroup());
@@ -200,12 +204,14 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
         serviceMetadata.setServiceInterfaceName(getInterface());
         serviceMetadata.setTarget(getRef());
 
+        // 如果应该延迟export，则一段时间后调用doExport
         if (shouldDelay()) {
             DELAY_EXPORT_EXECUTOR.schedule(this::doExport, getDelay(), TimeUnit.MILLISECONDS);
         } else {
             doExport();
         }
 
+        // 发送ServiceConfigExportedEvent事件
         exported();
     }
 
@@ -216,24 +222,32 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
 
     private void checkAndUpdateSubConfigs() {
         // Use default configs defined explicitly with global scope
+        // 将ProviderConfig对象的配置设置到当前对象
         completeCompoundConfigs();
         checkDefault();
+        // 初始化ProtocolConfig对象
         checkProtocol();
         // init some null configuration.
+        // SPI加载所有的ConfigInitializer
         List<ConfigInitializer> configInitializers = ExtensionLoader.getExtensionLoader(ConfigInitializer.class)
                 .getActivateExtension(URL.valueOf("configInitializer://"), (String[]) null);
+        // 调用所有ConfigInitializer对象的initServiceConfig方法，给了扩展ServiceConfig属性的机会，默认ConfigInitializer实现为空
         configInitializers.forEach(e -> e.initServiceConfig(this));
 
         // if protocol is not injvm checkRegistry
+        // 如果protocol不是只有injvm配置
         if (!isOnlyInJvm()) {
+            // 检查所有的RegistryConfig配置，判断address属性是否不为空
             checkRegistry();
         }
+        // 从配置中刷新属性
         this.refresh();
 
         if (StringUtils.isEmpty(interfaceName)) {
             throw new IllegalStateException("<dubbo:service interface=\"\" /> interface not allow null!");
         }
 
+        // 如果是泛化调用
         if (ref instanceof GenericService) {
             interfaceClass = GenericService.class;
             if (StringUtils.isEmpty(generic)) {
@@ -246,16 +260,20 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
             } catch (ClassNotFoundException e) {
                 throw new IllegalStateException(e.getMessage(), e);
             }
+            // 检查所有的MethodConfig配置，判断MethodConfig配置对应的方法在interfaceClass接口中是否存在
             checkInterfaceAndMethods(interfaceClass, getMethods());
+            // 检查ref是否是interfaceClass接口的实现类
             checkRef();
             generic = Boolean.FALSE.toString();
         }
         if (local != null) {
+            // 如果local为true，表示使用interfaceName + "Local"作为代理的实现类名称
             if ("true".equals(local)) {
                 local = interfaceName + "Local";
             }
             Class<?> localClass;
             try {
+                // 加载代理类
                 localClass = ClassUtils.forNameWithThreadContextClassLoader(local);
             } catch (ClassNotFoundException e) {
                 throw new IllegalStateException(e.getMessage(), e);
@@ -265,11 +283,13 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
             }
         }
         if (stub != null) {
+            // 如果stub为true，表示使用interfaceName + "Stub"作为代理的实现类名称
             if ("true".equals(stub)) {
                 stub = interfaceName + "Stub";
             }
             Class<?> stubClass;
             try {
+                // 加载代理类
                 stubClass = ClassUtils.forNameWithThreadContextClassLoader(stub);
             } catch (ClassNotFoundException e) {
                 throw new IllegalStateException(e.getMessage(), e);
@@ -278,8 +298,11 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
                 throw new IllegalStateException("The stub implementation class " + stubClass.getName() + " not implement interface " + interfaceName);
             }
         }
+        // 如果local或者stub不为空，检查对应的代理类是否有参数为interfaceClass类型的构造函数
         checkStubAndLocal(interfaceClass);
+        // 如果存在mork类
         ConfigValidationUtils.checkMock(interfaceClass, this);
+        // 检查各种属性是否合法
         ConfigValidationUtils.validateServiceConfig(this);
         postProcessConfig();
     }

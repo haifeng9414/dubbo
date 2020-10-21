@@ -264,6 +264,7 @@ public class ConfigValidationUtils {
             return;
         }
 
+        // 获取mork类型
         String normalizedMock = MockInvoker.normalizeMock(mock);
         if (normalizedMock.startsWith(RETURN_PREFIX)) {
             normalizedMock = normalizedMock.substring(RETURN_PREFIX.length()).trim();

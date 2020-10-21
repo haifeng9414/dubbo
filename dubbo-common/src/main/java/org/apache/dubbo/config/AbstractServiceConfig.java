@@ -31,6 +31,7 @@ import static org.apache.dubbo.common.constants.CommonConstants.SERVICE_FILTER_K
  *
  * @export
  */
+// 定义了一些针对服务提供者的通用配置
 public abstract class AbstractServiceConfig extends AbstractInterfaceConfig {
 
     private static final long serialVersionUID = 1L;
@@ -38,6 +39,7 @@ public abstract class AbstractServiceConfig extends AbstractInterfaceConfig {
     /**
      * The service version
      */
+    // 保存当前服务提供者的版本
     protected String version;
 
     /**
@@ -58,6 +60,7 @@ public abstract class AbstractServiceConfig extends AbstractInterfaceConfig {
     /**
      * Whether to export the service
      */
+    // 是否允许export当前服务提供者
     protected Boolean export;
 
     /**

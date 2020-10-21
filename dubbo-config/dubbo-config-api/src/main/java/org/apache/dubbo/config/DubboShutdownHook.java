@@ -126,7 +126,9 @@ public class DubboShutdownHook extends Thread {
 
     public static void destroyAll() {
         if (destroyed.compareAndSet(false, true)) {
+            // 调用所有Registry的destroy方法
             AbstractRegistryFactory.destroyAll();
+            // 调用Protocol的实现类的destroy方法
             destroyProtocols();
         }
     }

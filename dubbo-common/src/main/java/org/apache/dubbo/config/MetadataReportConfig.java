@@ -32,6 +32,7 @@ import static org.apache.dubbo.common.utils.StringUtils.isEmpty;
  *
  * @export
  */
+// 定义了元数据中心的配置，元数据中心用于保存dubbo服务的元数据信息和服务消费者与服务提供者的一些配置
 public class MetadataReportConfig extends AbstractConfig {
 
     private static final long serialVersionUID = 55233L;

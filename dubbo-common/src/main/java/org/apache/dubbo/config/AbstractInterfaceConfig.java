@@ -48,7 +48,7 @@ import static org.apache.dubbo.common.constants.CommonConstants.TIMESTAMP_KEY;
  *
  * @export
  */
-// 定义了一些针对接口的属性配置
+// 定义了一些服务（服务消费者或者服务生产者）的通用配置
 public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
 
     private static final long serialVersionUID = -1559314110797223229L;
@@ -119,6 +119,7 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
      * The registry list the service will register to
      * Also see {@link #registryIds}, only one of them will work.
      */
+    // 保存注册中心的配置
     protected List<RegistryConfig> registries;
 
     /**
@@ -462,6 +463,9 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         this.application = application;
         if (application != null) {
             ConfigManager configManager = ApplicationModel.getConfigManager();
+            // 缓存application对象到ConfigManager，ConfigManager对象通过SPI获得，所以是单例的，ConfigManager对象用于缓存
+            // 所有的AbstractConfig接口实现类
+            // 这里获取ConfigManager中ApplicationConfig，如果不存在则通过orElseGet设置进去
             configManager.getApplication().orElseGet(() -> {
                 configManager.setApplication(application);
                 return application;

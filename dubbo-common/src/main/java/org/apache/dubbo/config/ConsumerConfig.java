@@ -23,6 +23,7 @@ import org.apache.dubbo.common.utils.StringUtils;
  *
  * @export
  */
+// 表示服务消费者缺省配置
 public class ConsumerConfig extends AbstractReferenceConfig {
 
     private static final long serialVersionUID = 2827274711143680600L;
