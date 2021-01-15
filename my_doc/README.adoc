@@ -1,8 +1,20 @@
 = 笔记
 
+image::resources/dubbo-framework.jpg[]
+
 == dubbo-common
 - link:dubbo-common/Dubbo中的SPI机制.adoc[Dubbo中的SPI机制]
 
 == dubbo-registry
 - link:dubbo-registry/注册中心实现.adoc[注册中心实现]
 
+== 其他
+- 服务端启动过程
+- 消费端调用过程
+- 如何实现泛化调用
+- 如何实现负载均衡
+- 如何实现异步执行
+- 如何实现异步调用
+- 如何实现本地服务调用
+- 如何实现Mock调用和服务降级
+- 如何实现监控

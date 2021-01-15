@@ -469,6 +469,7 @@ public class ExtensionLoader<T> {
             // 返回默认的扩展点实现类
             return getDefaultExtension();
         }
+        // 从缓存中获取实例Holder
         final Holder<Object> holder = getOrCreateHolder(name);
         Object instance = holder.get();
         if (instance == null) {
@@ -627,10 +628,10 @@ public class ExtensionLoader<T> {
 
     @SuppressWarnings("unchecked")
     public T getAdaptiveExtension() {
-        // 获取适配器实例
+        // 从缓存中获取适配器实例
         Object instance = cachedAdaptiveInstance.get();
         if (instance == null) {
-            // 如果创建发生过error，则以后也不用再尝试创建了，直接返回error
+            // 如果创建过程发生过error，则以后也不用再尝试创建了，直接返回error
             if (createAdaptiveInstanceError != null) {
                 throw new IllegalStateException("Failed to create adaptive instance: " +
                         createAdaptiveInstanceError.toString(),
@@ -713,9 +714,10 @@ public class ExtensionLoader<T> {
                     for (Class<?> wrapperClass : wrapperClassesList) {
                         Wrapper wrapper = wrapperClass.getAnnotation(Wrapper.class);
                         // 判断当前wrapper是否适配当前实例
+                        // 如果有wrapper注解，则判断是否满足matches，并且不满足mismatches
                         if (wrapper == null
                                 || (ArrayUtils.contains(wrapper.matches(), name) && !ArrayUtils.contains(wrapper.mismatches(), name))) {
-                            // 适配的化通过反射创建wrapper实例，并替代作为新的instance
+                            // 通过反射创建wrapper实例，并替代作为新的instance
                             instance = injectExtension((T) wrapperClass.getConstructor(type).newInstance(instance));
                         }
                     }
@@ -735,20 +737,24 @@ public class ExtensionLoader<T> {
         return getExtensionClasses().containsKey(name);
     }
 
+    // 依赖注入
     private T injectExtension(T instance) {
 
+        // objectFactory的初始化在ExtensionLoader的构造函数，默认实现为SpiExtensionFactory
         if (objectFactory == null) {
             return instance;
         }
 
         try {
             for (Method method : instance.getClass().getMethods()) {
+                // 只遍历setter方法
                 if (!isSetter(method)) {
                     continue;
                 }
                 /**
                  * Check {@link DisableInject} to see if we need auto injection for this property
                  */
+                // 禁用自动注入则跳过
                 if (method.getAnnotation(DisableInject.class) != null) {
                     continue;
                 }
@@ -822,8 +828,8 @@ public class ExtensionLoader<T> {
     }
 
     private Map<String, Class<?>> getExtensionClasses() {
+        // 先从缓存中获取
         Map<String, Class<?>> classes = cachedClasses.get();
-        // 如果当前扩展点接口还没加载过扩展点，则进行加载
         if (classes == null) {
             synchronized (cachedClasses) {
                 classes = cachedClasses.get();
@@ -934,6 +940,7 @@ public class ExtensionLoader<T> {
         }
     }
 
+    // 遍历resourceURL中的每一行，对于A=B的形式，A为实现类的名称，B为实现类的全限定名
     private void loadResource(Map<String, Class<?>> extensionClasses, ClassLoader classLoader,
                               java.net.URL resourceURL, boolean overridden, String... excludedPackages) {
         try {
@@ -982,6 +989,7 @@ public class ExtensionLoader<T> {
 
     private void loadClass(Map<String, Class<?>> extensionClasses, java.net.URL resourceURL, Class<?> clazz, String name,
                            boolean overridden) throws NoSuchMethodException {
+        // 检查当前类是否是当前接口的实现类
         if (!type.isAssignableFrom(clazz)) {
             throw new IllegalStateException("Error occurred when loading extension class (interface: " +
                     type + ", class line: " + clazz.getName() + "), class "
@@ -994,7 +1002,7 @@ public class ExtensionLoader<T> {
         if (clazz.isAnnotationPresent(Adaptive.class)) {
             // 保存clazz到cachedAdaptiveClass属性
             cacheAdaptiveClass(clazz, overridden);
-        } else if (isWrapperClass(clazz)) { // 如果实现类是个Wrapper，即保存在以扩展点接口作为参数的构造函数
+        } else if (isWrapperClass(clazz)) { // 如果实现类是个Wrapper，即存在以扩展点接口作为参数的构造函数
             // Wrapper类同样实现了扩展点接口，但是Wrapper不是扩展点的真正实现。它的用途主要是用于从ExtensionLoader返回扩展点时，
             // 包装在真正的扩展点实现外。即从ExtensionLoader中返回的实际上是Wrapper类的实例，Wrapper持有了实际的扩展点实现类。
             // 扩展点的Wrapper类可以有多个，也可以根据需要新增。
