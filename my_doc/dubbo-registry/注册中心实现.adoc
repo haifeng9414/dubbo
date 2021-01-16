@@ -1,4 +1,6 @@
-== 注册中心实现
+= 注册中心实现
+:kroki-fetch-diagram:
+:imagesdir: img
 
 [plantuml]
 ----
