@@ -706,7 +706,7 @@ private T injectExtension(T instance) {
 }
 ----
 
-依赖注入之后处理wrap，最后如果实现类实现了``Lifecycle``接口，则调用其``initialize()``方法：
+依赖注入之后处理wrap，wrap的处理很简单，各个wrap通过构造函数组成层层的代理，每个wrap都有一些额外的功能，最终返回一个wrap实例作为实现类的对象返回。最后如果实现类实现了``Lifecycle``接口，则调用其``initialize()``方法：
 
 [java]
 ----
@@ -737,5 +737,3 @@ if (wrap) {
 // 如果实现类Lifecycle接口，则调用其initialize方法
 initExtension(instance);
 ----
-
-以上是Dubbo的SPI实现。
