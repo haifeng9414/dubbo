@@ -192,24 +192,32 @@ public class DubboCodec extends ExchangeCodec {
     protected void encodeResponseData(Channel channel, ObjectOutput out, Object data, String version) throws IOException {
         Result result = (Result) data;
         // currently, the version value in Response records the version of Request
+        // 判断当前版本是否支持attachment
         boolean attach = Version.isSupportResponseAttachment(version);
         Throwable th = result.getException();
         if (th == null) {
+            // 没有异常则写入响应结果
             Object ret = result.getValue();
             if (ret == null) {
+                // 响应结果为空则写入RESPONSE_NULL_VALUE_WITH_ATTACHMENTS
                 out.writeByte(attach ? RESPONSE_NULL_VALUE_WITH_ATTACHMENTS : RESPONSE_NULL_VALUE);
             } else {
+                // 否则写入RESPONSE_VALUE_WITH_ATTACHMENTS
                 out.writeByte(attach ? RESPONSE_VALUE_WITH_ATTACHMENTS : RESPONSE_VALUE);
+                // 写入响应结果
                 out.writeObject(ret);
             }
         } else {
+            // 发生异常则写入RESPONSE_WITH_EXCEPTION_WITH_ATTACHMENTS
             out.writeByte(attach ? RESPONSE_WITH_EXCEPTION_WITH_ATTACHMENTS : RESPONSE_WITH_EXCEPTION);
+            // 写入异常
             out.writeThrowable(th);
         }
 
         if (attach) {
             // returns current version of Response to consumer side.
             result.getObjectAttachments().put(DUBBO_VERSION_KEY, Version.getProtocolVersion());
+            // 写入attachment
             out.writeAttachments(result.getObjectAttachments());
         }
     }
