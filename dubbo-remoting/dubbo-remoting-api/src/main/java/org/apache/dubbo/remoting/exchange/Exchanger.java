@@ -39,6 +39,7 @@ public interface Exchanger {
      * @param handler
      * @return message server
      */
+    // 返回的ExchangeServer表示服务端
     @Adaptive({Constants.EXCHANGER_KEY})
     ExchangeServer bind(URL url, ExchangeHandler handler) throws RemotingException;
 
@@ -49,6 +50,7 @@ public interface Exchanger {
      * @param handler
      * @return message channel
      */
+    // 返回的ExchangeClient表示客户端
     @Adaptive({Constants.EXCHANGER_KEY})
     ExchangeClient connect(URL url, ExchangeHandler handler) throws RemotingException;
 

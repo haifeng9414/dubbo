@@ -526,9 +526,11 @@ public class DubboBootstrap extends GenericEventListener {
             return;
         }
 
-        // 通过Dubbo的SPI加载所有FrameworkExt接口的实现类，逐个调用initialize方法
+        // 通过Dubbo的SPI加载所有FrameworkExt接口的实现类，逐个调用initialize方法，ConfigManager、Environment和ServiceRepository
+        // 都实现了该接口，所以这里实际上会调用这些类的initialize方法，只有Environment真正实现了逻辑，其他都类对于该方法的实现都是空
         ApplicationModel.initFrameworkExts();
 
+        // 初始化配置中心
         startConfigCenter();
 
         // 初始化RegistryConfig和ProtocolConfig的配置
@@ -615,7 +617,7 @@ public class DubboBootstrap extends GenericEventListener {
 
     private void startConfigCenter() {
 
-        // 遍历能够作为配置中心的注册中心，根据注册中心创建配置中心的配置
+        // 遍历能够作为配置中心的注册中心，根据注册中心创建配置中心的配置，并保存到configManager对象
         useRegistryAsConfigCenterIfNecessary();
 
         // 获取配置中心的配置
@@ -910,6 +912,7 @@ public class DubboBootstrap extends GenericEventListener {
     /**
      * Start the bootstrap
      */
+    // 这个方法也能够export和refer服务，主要是给Spring这样的框架使用的，直接调用DubboBootstrap.start()就能够启动Dubbo应用
     public DubboBootstrap start() {
         if (started.compareAndSet(false, true)) {
             ready.set(false);
@@ -923,6 +926,7 @@ public class DubboBootstrap extends GenericEventListener {
             // Not only provider register
             if (!isOnlyRegisterProvider() || hasExportedServices()) {
                 // 2. export MetadataService
+                // export本地元数据服务，其他客户端可以使用MetadataService接口获取当前Dubbo实例的信息
                 exportMetadataService();
                 //3. Register the local ServiceInstance if required
                 registerServiceInstance();

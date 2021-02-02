@@ -67,6 +67,8 @@ public class Exchangers {
             throw new IllegalArgumentException("handler == null");
         }
         url = url.addParameterIfAbsent(Constants.CODEC_KEY, "exchange");
+        // getExchanger(url)根据url的exchanger参数通过ExtensionLoader获取指定的Exchanger实现，默认返回HeaderExchanger，
+        // Exchanger的bind方法返回的ExchangeServer接口表示一个服务端，其继承RemotingServer接口
         return getExchanger(url).bind(url, handler);
     }
 

@@ -46,6 +46,7 @@ public class HeaderExchangeHandler implements ChannelHandlerDelegate {
 
     protected static final Logger logger = LoggerFactory.getLogger(HeaderExchangeHandler.class);
 
+    // 默认实现是DubboProtocol的匿名内部类ExchangeHandlerAdapter
     private final ExchangeHandler handler;
 
     public HeaderExchangeHandler(ExchangeHandler handler) {
@@ -77,6 +78,7 @@ public class HeaderExchangeHandler implements ChannelHandlerDelegate {
 
     void handleRequest(final ExchangeChannel channel, Request req) throws RemotingException {
         Response res = new Response(req.getId(), req.getVersion());
+        // 解码请求失败的话
         if (req.isBroken()) {
             Object data = req.getData();
 
@@ -95,11 +97,15 @@ public class HeaderExchangeHandler implements ChannelHandlerDelegate {
             return;
         }
         // find handler by message class.
+        // 获取解码得到的请求数据，通常就是Invocation对象
         Object msg = req.getData();
         try {
+            // 处理请求，这里的handler默认是DubboProtocol的匿名内部类
             CompletionStage<Object> future = handler.reply(channel, msg);
+            // 添加处理请求结束后的callback
             future.whenComplete((appResult, t) -> {
                 try {
+                    // 判断是否存在异常
                     if (t == null) {
                         res.setStatus(Response.OK);
                         res.setResult(appResult);
@@ -107,6 +113,7 @@ public class HeaderExchangeHandler implements ChannelHandlerDelegate {
                         res.setStatus(Response.SERVICE_ERROR);
                         res.setErrorMessage(StringUtils.toString(t));
                     }
+                    // 返回请求结果
                     channel.send(res);
                 } catch (RemotingException e) {
                     logger.warn("Send result to consumer failed, channel is " + channel + ", msg is " + e);
@@ -121,6 +128,7 @@ public class HeaderExchangeHandler implements ChannelHandlerDelegate {
 
     @Override
     public void connected(Channel channel) throws RemotingException {
+        // 获取保存在channel的attribute中的ExchangeChannel对象，如果没有则创建并保存到channel的attribute
         ExchangeChannel exchangeChannel = HeaderExchangeChannel.getOrAddChannel(channel);
         handler.connected(exchangeChannel);
     }
@@ -172,8 +180,10 @@ public class HeaderExchangeHandler implements ChannelHandlerDelegate {
                 handlerEvent(channel, request);
             } else {
                 if (request.isTwoWay()) {
+                    // 如果请求需要返回值，则调用handleRequest方法处理，通常调用方法请求都是需要返回值的
                     handleRequest(exchangeChannel, request);
                 } else {
+                    // 否则调用handler.received处理，这里
                     handler.received(exchangeChannel, request.getData());
                 }
             }

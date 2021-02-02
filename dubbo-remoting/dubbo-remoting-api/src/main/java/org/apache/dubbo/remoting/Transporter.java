@@ -40,6 +40,7 @@ public interface Transporter {
      * @throws RemotingException
      * @see org.apache.dubbo.remoting.Transporters#bind(URL, ChannelHandler...)
      */
+    // 服务端会调用bind开始请求监听
     @Adaptive({Constants.SERVER_KEY, Constants.TRANSPORTER_KEY})
     RemotingServer bind(URL url, ChannelHandler handler) throws RemotingException;
 
@@ -52,6 +53,7 @@ public interface Transporter {
      * @throws RemotingException
      * @see org.apache.dubbo.remoting.Transporters#connect(URL, ChannelHandler...)
      */
+    // 客户端会调用connect连接远程服务
     @Adaptive({Constants.CLIENT_KEY, Constants.TRANSPORTER_KEY})
     Client connect(URL url, ChannelHandler handler) throws RemotingException;
 

@@ -90,6 +90,7 @@ public class DefaultFuture extends CompletableFuture<Object> {
      * check time out of the future
      */
     private static void timeoutCheck(DefaultFuture future) {
+        // TimeoutCheckTask用于timeout时间后发送一个timeoutResponse
         TimeoutCheckTask task = new TimeoutCheckTask(future.getId());
         future.timeoutCheckTask = TIME_OUT_TIMER.newTimeout(task, future.getTimeout(), TimeUnit.MILLISECONDS);
     }
@@ -170,6 +171,7 @@ public class DefaultFuture extends CompletableFuture<Object> {
                 Timeout t = future.timeoutCheckTask;
                 if (!timeout) {
                     // decrease Time
+                    // 关闭timeout检查的定时任务
                     t.cancel();
                 }
                 future.doReceived(response);

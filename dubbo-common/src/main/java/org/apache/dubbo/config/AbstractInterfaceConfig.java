@@ -191,7 +191,9 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
     }
 
     public static void appendRuntimeParameters(Map<String, String> map) {
+        // Dubbo RPC protocol version
         map.put(DUBBO_VERSION_KEY, Version.getProtocolVersion());
+        // dubbo版本
         map.put(RELEASE_KEY, Version.getVersion());
         map.put(TIMESTAMP_KEY, String.valueOf(System.currentTimeMillis()));
         if (ConfigUtils.getPid() > 0) {

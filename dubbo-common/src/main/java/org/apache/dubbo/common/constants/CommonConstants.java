@@ -187,6 +187,7 @@ public interface CommonConstants {
 
     String REVISION_KEY = "revision";
 
+    // 默认值为remote
     String METADATA_KEY = "metadata-type";
 
     String DEFAULT_METADATA_STORAGE_TYPE = "local";

@@ -28,6 +28,7 @@ import java.util.stream.Stream;
  * @see org.apache.dubbo.rpc.Invoker#invoke(Invocation)
  * @see org.apache.dubbo.rpc.RpcInvocation
  */
+// Invocation表示一个调用请求
 public interface Invocation {
 
     String getTargetServiceUniqueName();

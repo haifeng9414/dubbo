@@ -33,6 +33,7 @@ public class ZookeeperRegistryFactory extends AbstractRegistryFactory {
      * Invisible injection of zookeeper client via IOC/SPI
      * @param zookeeperTransporter
      */
+    // ExtensionLoader会在创建ZookeeperRegistryFactory时注入ZookeeperTransporter
     public void setZookeeperTransporter(ZookeeperTransporter zookeeperTransporter) {
         this.zookeeperTransporter = zookeeperTransporter;
     }

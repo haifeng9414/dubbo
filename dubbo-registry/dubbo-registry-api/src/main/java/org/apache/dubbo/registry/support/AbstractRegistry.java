@@ -459,14 +459,17 @@ public abstract class AbstractRegistry implements Registry {
             return;
         }
         Map<String, List<URL>> categoryNotified = notified.computeIfAbsent(url, u -> new ConcurrentHashMap<>());
+        // 遍历所有category分类下的url列表，调用listener.notify进行通知
         for (Map.Entry<String, List<URL>> entry : result.entrySet()) {
             String category = entry.getKey();
             List<URL> categoryList = entry.getValue();
             // 将通知的分类和对应的列表保存到notified
             categoryNotified.put(category, categoryList);
+            // 默认listener为RegistryProtocol的export方法创建的OverrideListener对象
             listener.notify(categoryList);
             // We will update our cache file after each notification.
             // When our Registry has a subscribe failure due to network jitter, we can return at least the existing cache URL.
+            // 持久化完成通知的url列表
             saveProperties(url);
         }
     }

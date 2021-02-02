@@ -28,6 +28,7 @@ import java.net.InetSocketAddress;
  * @see org.apache.dubbo.remoting.Client
  * @see RemotingServer
  */
+// 网络端点的功能
 public interface Endpoint {
 
     /**

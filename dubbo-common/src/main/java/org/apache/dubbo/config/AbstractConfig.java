@@ -115,6 +115,8 @@ public abstract class AbstractConfig implements Serializable {
     }
 
     @SuppressWarnings("unchecked")
+    // 遍历参数config的所有getter方法，根据getter方法的名称解析参数的名称（可以通过Parameter注解配置名称、同时也能设置require），
+    // getter方法返回值的字符串形式为值，保存到当前方法的parameters参数中
     public static void appendParameters(Map<String, String> parameters, Object config, String prefix) {
         if (config == null) {
             return;

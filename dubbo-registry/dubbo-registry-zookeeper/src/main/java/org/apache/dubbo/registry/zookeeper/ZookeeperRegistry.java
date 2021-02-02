@@ -126,6 +126,18 @@ public class ZookeeperRegistry extends FailbackRegistry {
     @Override
     public void doRegister(URL url) {
         try {
+            // 在zk中创建一个节点，dynamic为true时表示注册一个临时节点，节点的内容默认为InetAddress.getLocalHost().getHostAddress().getBytes()
+            // 节点路径如下：
+            /*
+            通过zkCli获取/dubbo/com.apache.dubbo.demo.api.GreetingService/providers路径下的节点
+            [zk: localhost:2181(CONNECTED) 14] ls /dubbo/com.apache.dubbo.demo.api.GreetingService/providers
+            // 可以发现有一个节点，节点名很长，包含了一个服务端的url的大部分参数
+            [dubbo%3A%2F%2F172.19.92.226%3A20880%2Fcom.apache.dubbo.demo.api.GreetingService%3Fanyhost%3Dtrue%26application%3Dfirst-dubbo-provider%26default%3Dtrue%26deprecated%3Dfalse%26dubbo%3D2.0.2%26dynamic%3Dtrue%26generic%3Dfalse%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D89484%26release%3D%26revision%3D1.0.0%26side%3Dprovider%26timestamp%3D1611730922954%26version%3D1.0.0]
+            // 获取这个节点的值
+            [zk: localhost:2181(CONNECTED) 15] get /dubbo/com.apache.dubbo.demo.api.GreetingService/providers/dubbo%3A%2F%2F172.19.92.226%3A20880%2Fcom.apache.dubbo.demo.api.GreetingService%3Fanyhost%3Dtrue%26application%3Dfirst-dubbo-provider%26default%3Dtrue%26deprecated%3Dfalse%26dubbo%3D2.0.2%26dynamic%3Dtrue%26generic%3Dfalse%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D89484%26release%3D%26revision%3D1.0.0%26side%3Dprovider%26timestamp%3D1611730922954%26version%3D1.0.0
+            // 节点值为该节点对应的服务端的地址
+            127.0.0.1
+             */
             zkClient.create(toUrlPath(url), url.getParameter(DYNAMIC_KEY, true));
         } catch (Throwable e) {
             throw new RpcException("Failed to register " + url + " to zookeeper " + getUrl() + ", cause: " + e.getMessage(), e);
@@ -144,6 +156,7 @@ public class ZookeeperRegistry extends FailbackRegistry {
     @Override
     public void doSubscribe(final URL url, final NotifyListener listener) {
         try {
+            // 如果interface值为*
             if (ANY_VALUE.equals(url.getServiceInterface())) {
                 String root = toRootPath();
                 ConcurrentMap<NotifyListener, ChildListener> listeners = zkListeners.computeIfAbsent(url, k -> new ConcurrentHashMap<>());
@@ -169,12 +182,17 @@ public class ZookeeperRegistry extends FailbackRegistry {
                 }
             } else {
                 List<URL> urls = new ArrayList<>();
+                // 获取url在zk中的路径，再加上，默认为/dubbo/com.apache.dubbo.demo.api.GreetingService/configurators
                 for (String path : toCategoriesPath(url)) {
                     ConcurrentMap<NotifyListener, ChildListener> listeners = zkListeners.computeIfAbsent(url, k -> new ConcurrentHashMap<>());
+                    // 创建一个listener
                     ChildListener zkListener = listeners.computeIfAbsent(listener, k -> (parentPath, currentChilds) -> ZookeeperRegistry.this.notify(url, k, toUrlsWithEmpty(url, parentPath, currentChilds)));
                     zkClient.create(path, false);
+                    // 订阅/dubbo/com.apache.dubbo.demo.api.GreetingService/configurators下的变化
                     List<String> children = zkClient.addChildListener(path, zkListener);
                     if (children != null) {
+                        // toUrlsWithEmpty方法根据传入的url参数创建一个新的url并设置protocol为empty
+                        // empty://172.19.92.226:20880/com.apache.dubbo.demo.api.GreetingService?anyhost=true&application=first-dubbo-provider&bind.ip=172.19.92.226&bind.port=20880&category=configurators&check=false&default=true&deprecated=false&dubbo=2.0.2&dynamic=true&generic=false&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=92111&release=&revision=1.0.0&side=provider&timestamp=1611735231093&version=1.0.0
                         urls.addAll(toUrlsWithEmpty(url, path, children));
                     }
                 }
@@ -243,7 +261,15 @@ public class ZookeeperRegistry extends FailbackRegistry {
 
     private String[] toCategoriesPath(URL url) {
         String[] categories;
+        // 如果category的值为*
         if (ANY_VALUE.equals(url.getParameter(CATEGORY_KEY))) {
+            /*
+             返回所有可选的category值，这些category会保存在dubbo中：
+             /dubbo/serviceInterface/providers：服务提供者注册信息，包含多个服务者URL元数据信息。
+             /dubbo/serviceInterface/consumers：服务消费才注册信息，包含多个消费者URL元数据信息。
+             /dubbo/serviceInterface/router：路由配置信息，包含消费者路由策略URL元数据信息。
+             /dubbo/serviceInterface/configurators：外部化配置信息，包含服务者动态配置URL元数据信息。
+             */
             categories = new String[]{PROVIDERS_CATEGORY, CONSUMERS_CATEGORY, ROUTERS_CATEGORY, CONFIGURATORS_CATEGORY};
         } else {
             categories = url.getParameter(CATEGORY_KEY, new String[]{DEFAULT_CATEGORY});

@@ -64,6 +64,7 @@ public abstract class ServiceConfigBase<T> extends AbstractServiceConfig {
     /**
      * The service name
      */
+    // 默认为接口全限定名
     protected String path;
 
     /**

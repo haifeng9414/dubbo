@@ -65,6 +65,7 @@ public class HeaderExchangeServer implements ExchangeServer {
     public HeaderExchangeServer(RemotingServer server) {
         Assert.notNull(server, "server == null");
         this.server = server;
+        // 开启关闭空闲连接的定时任务
         startIdleCheckTask(getUrl());
     }
 
@@ -108,6 +109,7 @@ public class HeaderExchangeServer implements ExchangeServer {
             if (getUrl().getParameter(Constants.CHANNEL_SEND_READONLYEVENT_KEY, true)) {
                 sendChannelReadOnlyEvent();
             }
+            // 等待所有channel关闭
             while (HeaderExchangeServer.this.isRunning()
                     && System.currentTimeMillis() - start < max) {
                 try {
@@ -259,10 +261,13 @@ public class HeaderExchangeServer implements ExchangeServer {
     }
 
     private void startIdleCheckTask(URL url) {
+        // 如果服务端不能处理空闲连接
         if (!server.canHandleIdle()) {
             AbstractTimerTask.ChannelProvider cp = () -> unmodifiableCollection(HeaderExchangeServer.this.getChannels());
+            // 获取空闲时间，默认为心跳时间的3倍
             int idleTimeout = getIdleTimeout(url);
             long idleTimeoutTick = calculateLeastDuration(idleTimeout);
+            // CloseTimerTask在timeout后关闭channel
             CloseTimerTask closeTimerTask = new CloseTimerTask(cp, idleTimeoutTick, idleTimeout);
             this.closeTimerTask = closeTimerTask;
 

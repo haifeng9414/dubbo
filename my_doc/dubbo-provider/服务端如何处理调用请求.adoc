@@ -1,0 +1,451 @@
+:服务端启动过程: link:服务端启动过程.adoc[服务端启动过程]
+:编解码过程: link:dubbo-common/编解码过程.adoc[编解码过程]
+
+= 服务端如何处理调用请求
+
+前提：{服务端启动过程}
+
+处理请求是由``ChannelHandler``的实现类完成的，服务端在启动过程中创建了各种``ChannelHandler``对象，这些``ChannelHandler``对象组成一个调用链，各自实现不同的功能，而最底层的``ChannelHandler``是``HeaderExchanger``的``bind``方法创建的``HeaderExchangeHandler``类：
+[java]
+—---
+public class HeaderExchanger implements Exchanger {
+
+    public static final String NAME = "header";
+
+    @Override
+    public ExchangeClient connect(URL url, ExchangeHandler handler) throws RemotingException {
+        return new HeaderExchangeClient(Transporters.connect(url, new DecodeHandler(new HeaderExchangeHandler(handler))), true);
+    }
+
+    @Override
+    public ExchangeServer bind(URL url, ExchangeHandler handler) throws RemotingException {
+        // HeaderExchangeServer类主要功能是实现了空闲连接的检测，其读取channel的读取和写入操作的上次执行时间，在超过一定时候后关闭
+        // channel，HeaderExchangeServer的其他方法的实现都是委托给传入构造函数的RemotingServer对象实现的
+        return new HeaderExchangeServer(Transporters.bind(url, new DecodeHandler(new HeaderExchangeHandler(handler))));
+    }
+
+}
+—---
+
+``HeaderExchangeHandler``的构造函数传入的handler是``DubboProtocol``类的匿名内部类，这个之后再说，这里先看看``HeaderExchangeHandler``的实现。对于服务端收到的请求的处理，入口是``HeaderExchangeHandler``的``received``方法，下面是``received``方法及其调用的``handleRequest``方法的代码：
+[java]
+----
+@Override
+public void received(Channel channel, Object message) throws RemotingException {
+    final ExchangeChannel exchangeChannel = HeaderExchangeChannel.getOrAddChannel(channel);
+    if (message instanceof Request) {
+        // handle request.
+        Request request = (Request) message;
+        if (request.isEvent()) {
+            handlerEvent(channel, request);
+        } else {
+            if (request.isTwoWay()) {
+                // 如果请求需要返回值，则调用handleRequest方法处理，通常调用方法请求都是需要返回值的
+                handleRequest(exchangeChannel, request);
+            } else {
+                // 否则调用handler.received处理，这里
+                handler.received(exchangeChannel, request.getData());
+            }
+        }
+    } else if (message instanceof Response) {
+        handleResponse(channel, (Response) message);
+    } else if (message instanceof String) {
+        if (isClientSide(channel)) {
+            Exception e = new Exception("Dubbo client can not supported string message: " + message + " in channel: " + channel + ", url: " + channel.getUrl());
+            logger.error(e.getMessage(), e);
+        } else {
+            String echo = handler.telnet(channel, (String) message);
+            if (echo != null && echo.length() > 0) {
+                channel.send(echo);
+            }
+        }
+    } else {
+        handler.received(exchangeChannel, message);
+    }
+}
+
+void handleRequest(final ExchangeChannel channel, Request req) throws RemotingException {
+    Response res = new Response(req.getId(), req.getVersion());
+    // 解码请求失败的话
+    if (req.isBroken()) {
+        Object data = req.getData();
+
+        String msg;
+        if (data == null) {
+            msg = null;
+        } else if (data instanceof Throwable) {
+            msg = StringUtils.toString((Throwable) data);
+        } else {
+            msg = data.toString();
+        }
+        res.setErrorMessage("Fail to decode request due to: " + msg);
+        res.setStatus(Response.BAD_REQUEST);
+
+        channel.send(res);
+        return;
+    }
+    // find handler by message class.
+    // 获取解码得到的请求数据，通常就是Invocation对象
+    Object msg = req.getData();
+    try {
+        // 处理请求，这里的handler默认是DubboProtocol的匿名内部类
+        CompletionStage<Object> future = handler.reply(channel, msg);
+        // 添加处理请求结束后的callback
+        future.whenComplete((appResult, t) -> {
+            try {
+                // 判断是否存在异常
+                if (t == null) {
+                    res.setStatus(Response.OK);
+                    res.setResult(appResult);
+                } else {
+                    res.setStatus(Response.SERVICE_ERROR);
+                    res.setErrorMessage(StringUtils.toString(t));
+                }
+                // 返回请求结果
+                channel.send(res);
+            } catch (RemotingException e) {
+                logger.warn("Send result to consumer failed, channel is " + channel + ", msg is " + e);
+            }
+        });
+    } catch (Throwable e) {
+        res.setStatus(Response.SERVICE_ERROR);
+        res.setErrorMessage(StringUtils.toString(e));
+        channel.send(res);
+    }
+}
+----
+
+网络请求是双向的，服务端能够接收到请求，而消费端能够接收到响应，``received``方法根据接收到的参数类型调用不同的方法，同时还对telent功能提供给了支持，这里主要关注服务端处理调用请求的过程，主要的处理在``handleRequest``方法。该方法获取保存在``Request``对象中的data，该data通常就是``Invocation``对象（关于这点，可以看笔记link:dubbo-common/编解码过程.adoc[编解码过程]），之后直接调用``handler.reply(channel, msg)``处理请求数据，这里的handler是传入其构造函数的``ExchangeHandler``对象，从``HeaderExchanger``对象的``bind``方法向上看可以发现该handler是``DubboProtocol``类的匿名内部类，该类的``reply``方法实现如下：
+[java]
+----
+@Override
+public CompletableFuture<Object> reply(ExchangeChannel channel, Object message) throws RemotingException {
+
+    if (!(message instanceof Invocation)) {
+        throw new RemotingException(channel, "Unsupported request: "
+                + (message == null ? null : (message.getClass().getName() + ": " + message))
+                + ", channel: consumer: " + channel.getRemoteAddress() + " --> provider: " + channel.getLocalAddress());
+    }
+
+    Invocation inv = (Invocation) message;
+    // 根据保存在Invocation中的path、version、group等信息获取DubboExporter对象，再返回DubboExporter对象持有的Invoker，
+    // 该invoker默认是DelegateProviderMetaDataInvoker，而DelegateProviderMetaDataInvoker又持有JavassistProxyFactory
+    // 创建的invoker
+    Invoker<?> invoker = getInvoker(channel, inv);
+    // need to consider backward-compatibility if it's a callback
+    if (Boolean.TRUE.toString().equals(inv.getObjectAttachments().get(IS_CALLBACK_SERVICE_INVOKE))) {
+        String methodsStr = invoker.getUrl().getParameters().get("methods");
+        boolean hasMethod = false;
+        if (methodsStr == null || !methodsStr.contains(",")) {
+            hasMethod = inv.getMethodName().equals(methodsStr);
+        } else {
+            String[] methods = methodsStr.split(",");
+            for (String method : methods) {
+                if (inv.getMethodName().equals(method)) {
+                    hasMethod = true;
+                    break;
+                }
+            }
+        }
+        if (!hasMethod) {
+            logger.warn(new IllegalStateException("The methodName " + inv.getMethodName()
+                    + " not found in callback service interface ,invoke will be ignored."
+                    + " please update the api interface. url is:"
+                    + invoker.getUrl()) + " ,invocation is :" + inv);
+            return null;
+        }
+    }
+    // 保存请求发起方地址到RpcContext.getContext()
+    RpcContext.getContext().setRemoteAddress(channel.getRemoteAddress());
+    // 调用本地实现类的方法获取调用结果
+    Result result = invoker.invoke(inv);
+    // result默认是AsyncRpcResult类型的，这里通过thenApply方法同步等待调用结果
+    return result.thenApply(Function.identity());
+}
+----
+
+``reply``方法首先根据传入的``Invocation``对象获取``Invoker``，之后调用``invoker.invoke(inv)``获取结果，这里先看看``Invoker``对象的获取过程，代码在``getInvoker``方法：
+[java]
+----
+Invoker<?> getInvoker(Channel channel, Invocation inv) throws RemotingException {
+    boolean isCallBackServiceInvoke = false;
+    boolean isStubServiceInvoke = false;
+    int port = channel.getLocalAddress().getPort();
+    String path = (String) inv.getObjectAttachments().get(PATH_KEY);
+
+    // if it's callback service on client side
+    isStubServiceInvoke = Boolean.TRUE.toString().equals(inv.getObjectAttachments().get(STUB_EVENT_KEY));
+    if (isStubServiceInvoke) {
+        port = channel.getRemoteAddress().getPort();
+    }
+
+    //callback
+    isCallBackServiceInvoke = isClientSide(channel) && !isStubServiceInvoke;
+    if (isCallBackServiceInvoke) {
+        path += "." + inv.getObjectAttachments().get(CALLBACK_SERVICE_KEY);
+        inv.getObjectAttachments().put(IS_CALLBACK_SERVICE_INVOKE, Boolean.TRUE.toString());
+    }
+
+    String serviceKey = serviceKey(
+            port,
+            path,
+            (String) inv.getObjectAttachments().get(VERSION_KEY),
+            (String) inv.getObjectAttachments().get(GROUP_KEY)
+    );
+    DubboExporter<?> exporter = (DubboExporter<?>) exporterMap.get(serviceKey);
+
+    if (exporter == null) {
+        throw new RemotingException(channel, "Not found exported service: " + serviceKey + " in " + exporterMap.keySet() + ", may be version or group mismatch " +
+                ", channel: consumer: " + channel.getRemoteAddress() + " --> provider: " + channel.getLocalAddress() + ", message:" + getInvocationWithoutData(inv));
+    }
+
+    return exporter.getInvoker();
+}
+----
+
+``getInvoker``方法从``exporterMap``中获取``DubboExporter``对象，该对象是在``export``方法中创建的：
+[java]
+----
+@Override
+public <T> Exporter<T> export(Invoker<T> invoker) throws RpcException {
+    
+    ...
+    
+    // export service.
+    // 以port、serviceName、version、group组成key，如：dubbo/com.apache.dubbo.demo.api.GreetingService:1.0.0:20880
+    String key = serviceKey(url);
+    // DubboExporter只有getInvoker和unexport两个方法，最主要的逻辑是当执行unexport方法是，将当前的DubboExporter从
+    // map中移除
+    DubboExporter<T> exporter = new DubboExporter<T>(invoker, key, exporterMap);
+    // 保存当前DubboProtocol对象发布过的服务列表
+    exporterMap.put(key, exporter);
+
+    ...
+
+    return exporter;
+}
+----
+
+``DubboExporter``对象持有的``Invoker``对象是``export``方法的参数，从笔记{服务端启动过程}可以看到，该``Invoker``对象是在``ServiceConfig``的``doExportUrlsFor1Protocol``方法中创建的``DelegateProviderMetaDataInvoker``对象，而创建的``DelegateProviderMetaDataInvoker``对象实际上引用的是``JavassistProxyFactory``创建的匿名内部类：
+[java]
+----
+private void doExportUrlsFor1Protocol(ProtocolConfig protocolConfig, List<URL> registryURLs) {
+    ...
+
+    // PROXY_FACTORY默认实现为JavassistProxyFactory，注意这里传入的url为registryURL，同时将服务端的url保存
+    // 到了registryURL的export参数，最后生成的url如：
+    // registry://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-provider&dubbo=2.0.2&export=dubbo%3A%2F%2F172.19.92.226%3A20880%2Fcom.apache.dubbo.demo.api.GreetingService%3Fanyhost%3Dtrue%26application%3Dfirst-dubbo-provider%26bind.ip%3D172.19.92.226%26bind.port%3D20880%26default%3Dtrue%26deprecated%3Dfalse%26dubbo%3D2.0.2%26dynamic%3Dtrue%26generic%3Dfalse%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D9231%26release%3D%26revision%3D1.0.0%26side%3Dprovider%26timestamp%3D1611908790969%26version%3D1.0.0&pid=9231&registry=zookeeper&timestamp=1611908790961
+    Invoker<?> invoker = PROXY_FACTORY.getInvoker(ref, (Class) interfaceClass, registryURL.addParameterAndEncoded(EXPORT_KEY, url.toFullString()));
+    // DelegateProviderMetaDataInvoker的作用是组合invoker和serviceConfig
+    DelegateProviderMetaDataInvoker wrapperInvoker = new DelegateProviderMetaDataInvoker(invoker, this);
+
+    Exporter<?> exporter = PROTOCOL.export(wrapperInvoker);
+    exporters.add(exporter);
+    ...
+}
+
+// JavassistProxyFactory类的getInvoker方法
+@Override
+    public <T> Invoker<T> getInvoker(T proxy, Class<T> type, URL url) {
+        // TODO Wrapper cannot handle this scenario correctly: the classname contains '$'
+        final Wrapper wrapper = Wrapper.getWrapper(proxy.getClass().getName().indexOf('$') < 0 ? proxy.getClass() : type);
+        /*
+        生成的wrapper如下，主要用于避免反射调用的开销，可以看下面的invokeMethod方法
+//
+// Source code recreated from a .class file by IntelliJ IDEA
+// (powered by Fernflower decompiler)
+//
+
+package org.apache.dubbo.common.bytecode;
+
+import com.apache.dubbo.demo.api.GreetingService;
+import com.apache.dubbo.demo.api.PoJo;
+import java.lang.reflect.InvocationTargetException;
+import java.util.Map;
+import org.apache.dubbo.common.bytecode.ClassGenerator.DC;
+
+public class Wrapper0 extends Wrapper implements DC {
+    public static String[] pns;
+    public static Map pts;
+    public static String[] mns;
+    public static String[] dmns;
+    public static Class[] mts0;
+    public static Class[] mts1;
+
+    public String[] getPropertyNames() {
+        return pns;
+    }
+
+    public boolean hasProperty(String var1) {
+        return pts.containsKey(var1);
+    }
+
+    public Class getPropertyType(String var1) {
+        return (Class)pts.get(var1);
+    }
+
+    public String[] getMethodNames() {
+        return mns;
+    }
+
+    public String[] getDeclaredMethodNames() {
+        return dmns;
+    }
+
+    // GreetingService是个接口，没有属性，所以这里的setPropertyValue和下面的getPropertyValue方法没有什么逻辑
+    public void setPropertyValue(Object var1, String var2, Object var3) {
+        try {
+            GreetingService var4 = (GreetingService)var1;
+        } catch (Throwable var6) {
+            throw new IllegalArgumentException(var6);
+        }
+
+        throw new NoSuchPropertyException("Not found property \"" + var2 + "\" field or setter method in class com.apache.dubbo.demo.api.GreetingService.");
+    }
+
+    public Object getPropertyValue(Object var1, String var2) {
+        try {
+            GreetingService var3 = (GreetingService)var1;
+        } catch (Throwable var5) {
+            throw new IllegalArgumentException(var5);
+        }
+
+        throw new NoSuchPropertyException("Not found property \"" + var2 + "\" field or setter method in class com.apache.dubbo.demo.api.GreetingService.");
+    }
+
+    // 强转成GreetingService后调用方法，避免反射调用
+    public Object invokeMethod(Object var1, String var2, Class[] var3, Object[] var4) throws InvocationTargetException {
+        GreetingService var5;
+        try {
+            var5 = (GreetingService)var1;
+        } catch (Throwable var8) {
+            throw new IllegalArgumentException(var8);
+        }
+
+        try {
+            if ("sayHello".equals(var2) && var3.length == 1) {
+                return var5.sayHello((String)var4[0]);
+            }
+
+            if ("testGeneric".equals(var2) && var3.length == 1) {
+                return var5.testGeneric((PoJo)var4[0]);
+            }
+        } catch (Throwable var9) {
+            throw new InvocationTargetException(var9);
+        }
+
+        throw new NoSuchMethodException("Not found method \"" + var2 + "\" in class com.apache.dubbo.demo.api.GreetingService.");
+    }
+
+    public Wrapper0() {
+    }
+}
+
+ */
+        // AbstractProxyInvoker封装了将异步调用或同步调用封装为AsyncRpcResult，AsyncRpcResult表示一个异步的执行结果
+        return new AbstractProxyInvoker<T>(proxy, type, url) {
+            @Override
+            protected Object doInvoke(T proxy, String methodName,
+                                      Class<?>[] parameterTypes,
+                                      Object[] arguments) throws Throwable {
+                // 这里的invokeMethod可以理解为调用当前服务端的实现类的方法
+                return wrapper.invokeMethod(proxy, methodName, parameterTypes, arguments);
+            }
+        };
+    }
+----
+
+``JavassistProxyFactory``创建了``AbstractProxyInvoker``类的实现类，其``doInvoke``方法会通过wrapper调用当前调用请求对应的接口的实现类的具体方法，这里的wrapper的主要作用是通过强转调用方法避免反射调用的开销，可以看上面代码注释中的例子。``AbstractProxyInvoker``类封装方法调用的结果为``AsyncRpcResult``，其``invoker``方法实现如下：
+[java]
+----
+@Override
+public Result invoke(Invocation invocation) throws RpcException {
+    try {
+        // 调用子类获取执行结果
+        Object value = doInvoke(proxy, invocation.getMethodName(), invocation.getParameterTypes(), invocation.getArguments());
+        // 将结果封装成CompletableFuture
+        CompletableFuture<Object> future = wrapWithFuture(value);
+        // 当future完成或者发送异常则会调用handle方法，这里将future的结果封装为AppResponse
+        CompletableFuture<AppResponse> appResponseFuture = future.handle((obj, t) -> {
+            AppResponse result = new AppResponse();
+            // 如果发生异常
+            if (t != null) {
+                if (t instanceof CompletionException) {
+                    result.setException(t.getCause());
+                } else {
+                    result.setException(t);
+                }
+            } else {
+                result.setValue(obj);
+            }
+            return result;
+        });
+        return new AsyncRpcResult(appResponseFuture, invocation);
+    } catch (InvocationTargetException e) {
+        if (RpcContext.getContext().isAsyncStarted() && !RpcContext.getContext().stopAsync()) {
+            logger.error("Provider async started, but got an exception from the original method, cannot write the exception back to consumer because an async result may have returned the new thread.", e);
+        }
+        return AsyncRpcResult.newDefaultAsyncResult(null, e.getTargetException(), invocation);
+    } catch (Throwable e) {
+        throw new RpcException("Failed to invoke remote proxy method " + invocation.getMethodName() + " to " + getUrl() + ", cause: " + e.getMessage(), e);
+    }
+}
+
+private CompletableFuture<Object> wrapWithFuture(Object value) {
+    // 如果当前是异步执行，返回保存在RpcContext.getContext()中的CompletableFuture
+    if (RpcContext.getContext().isAsyncStarted()) {
+        return ((AsyncContextImpl)(RpcContext.getContext().getAsyncContext())).getInternalFuture();
+    } else if (value instanceof CompletableFuture) {
+        return (CompletableFuture<Object>) value;
+    }
+    // 如果不满足上面的条件，说明当前是同步调用，且value为调用结果
+    return CompletableFuture.completedFuture(value);
+}
+----
+
+当``AbstractProxyInvoker``类的``invoker``方法返回后，回到一开始的``reply``方法（实际上中间还经历了很多wrapper，如``ContextFilter``、``TimeoutFilter``等，这些``Filter``是由``ProtocolFilterWrapper``组装的），获取到结果后的处理如下：
+[java]
+----
+@Override
+public CompletableFuture<Object> reply(ExchangeChannel channel, Object message) throws RemotingException {
+    ...
+
+    // 保存请求发起方地址到RpcContext.getContext()
+    RpcContext.getContext().setRemoteAddress(channel.getRemoteAddress());
+    // 调用本地实现类的方法获取调用结果
+    Result result = invoker.invoke(inv);
+    // result默认是AsyncRpcResult类型的，这里添加执行完成后的callback
+    return result.thenApply(Function.identity());
+}
+----
+
+上面的代码为``Result``对象添加了一个``Function.identity()``的callback，这样``reply``方法的返回结果变为了``CompletableFuture``类型，在执行完成后会调用``Function.identity()``。这个``Result``对象实际上就是``AsyncRpcResult``对象。下面再回到调用``reply``方法的地方，也就是``HeaderExchangeHandler``的``handleRequest``方法，该方法在获取到``CompletableFuture``后通过``ExchangeChannel``将调用结果发送回去了：
+[java]
+----
+void handleRequest(final ExchangeChannel channel, Request req) throws RemotingException {
+    ...
+
+    CompletionStage<Object> future = handler.reply(channel, msg);
+    // 添加处理请求结束后的callback
+    future.whenComplete((appResult, t) -> {
+        try {
+            // 判断是否存在异常
+            if (t == null) {
+                res.setStatus(Response.OK);
+                res.setResult(appResult);
+            } else {
+                res.setStatus(Response.SERVICE_ERROR);
+                res.setErrorMessage(StringUtils.toString(t));
+            }
+            // 返回请求结果
+            channel.send(res);
+        } catch (RemotingException e) {
+            logger.warn("Send result to consumer failed, channel is " + channel + ", msg is " + e);
+        }
+    });
+
+    ...
+}
+----
+
+以上是服务端处理调用请求的过程，关于请求结果的发送，可以看笔记{编解码过程}。

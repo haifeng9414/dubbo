@@ -58,7 +58,7 @@ public interface RegistryFactory {
      * @param url 注册中心地址，不允许为空
      * @return 注册中心引用，总不返回空
      */
-    @Adaptive({"protocol"})
+    @Adaptive({"protocol"}) // 根据url的protocol参数决定调用的实现类
     Registry getRegistry(URL url);
 
 }

@@ -41,6 +41,8 @@ public class HeaderExchanger implements Exchanger {
 
     @Override
     public ExchangeServer bind(URL url, ExchangeHandler handler) throws RemotingException {
+        // HeaderExchangeServer类主要功能是实现了空闲连接的检测，其读取channel的读取和写入操作的上次执行时间，在超过一定时候后关闭
+        // channel，HeaderExchangeServer的其他方法的实现都是委托给传入构造函数的RemotingServer对象实现的
         return new HeaderExchangeServer(Transporters.bind(url, new DecodeHandler(new HeaderExchangeHandler(handler))));
     }
 

@@ -44,9 +44,11 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
     private ConcurrentMap<String, ConsumerModel> consumers = new ConcurrentHashMap<>();
 
     // providers
+    // 以group + 服务名 + version为key，如dubbo/com.apache.dubbo.demo.api.GreetingService:1.0.0，ProviderModel对象保存服务名、接口类、group、version等信息，可以看registerProvider方法的参数
     private ConcurrentMap<String, ProviderModel> providers = new ConcurrentHashMap<>();
 
     // useful to find a provider model quickly with serviceInterfaceName:version
+    // 同上，以服务名 + version为key，如com.apache.dubbo.demo.api.GreetingService:1.0.0
     private ConcurrentMap<String, ProviderModel> providersWithoutGroup = new ConcurrentHashMap<>();
 
     public ServiceRepository() {
@@ -119,6 +121,8 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
         ProviderModel providerModel = new ProviderModel(serviceKey, serviceInstance, serviceModel, serviceConfig,
                 serviceMetadata);
         providers.putIfAbsent(serviceKey, providerModel);
+        // serviceKey的例子：dubbo/com.apache.dubbo.demo.api.GreetingService:1.0.0，keyWithoutGroup方法去掉group，返回
+        // com.apache.dubbo.demo.api.GreetingService:1.0.0
         providersWithoutGroup.putIfAbsent(keyWithoutGroup(serviceKey), providerModel);
     }
 

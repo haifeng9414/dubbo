@@ -81,10 +81,14 @@ public abstract class AbstractProxyInvoker<T> implements Invoker<T> {
     @Override
     public Result invoke(Invocation invocation) throws RpcException {
         try {
+            // 调用子类获取执行结果
             Object value = doInvoke(proxy, invocation.getMethodName(), invocation.getParameterTypes(), invocation.getArguments());
+            // 将结果封装成CompletableFuture
 			CompletableFuture<Object> future = wrapWithFuture(value);
+			// 当future完成或者发送异常则会调用handle方法，这里将future的结果封装为AppResponse
             CompletableFuture<AppResponse> appResponseFuture = future.handle((obj, t) -> {
                 AppResponse result = new AppResponse();
+                // 如果发生异常
                 if (t != null) {
                     if (t instanceof CompletionException) {
                         result.setException(t.getCause());
@@ -108,11 +112,13 @@ public abstract class AbstractProxyInvoker<T> implements Invoker<T> {
     }
 
 	private CompletableFuture<Object> wrapWithFuture(Object value) {
+        // 如果当前是异步执行，返回保存在RpcContext.getContext()中的CompletableFuture
         if (RpcContext.getContext().isAsyncStarted()) {
             return ((AsyncContextImpl)(RpcContext.getContext().getAsyncContext())).getInternalFuture();
         } else if (value instanceof CompletableFuture) {
             return (CompletableFuture<Object>) value;
         }
+        // 如果不满足上面的条件，说明当前是同步调用，且value为调用结果
         return CompletableFuture.completedFuture(value);
     }
 

@@ -169,7 +169,9 @@ public class ConfigValidationUtils {
     public static List<URL> loadRegistries(AbstractInterfaceConfig interfaceConfig, boolean provider) {
         // check && override if necessary
         List<URL> registryList = new ArrayList<URL>();
+        // 应用程序的配置
         ApplicationConfig application = interfaceConfig.getApplication();
+        // 注册中心的配置
         List<RegistryConfig> registries = interfaceConfig.getRegistries();
         if (CollectionUtils.isNotEmpty(registries)) {
             for (RegistryConfig config : registries) {
@@ -179,6 +181,7 @@ public class ConfigValidationUtils {
                 }
                 if (!RegistryConfig.NO_AVAILABLE.equalsIgnoreCase(address)) {
                     Map<String, String> map = new HashMap<String, String>();
+                    // 通过application对象的getter方法获取参数，保存到map中，参数名称和require等信息可以通过Parameter注解配置
                     AbstractConfig.appendParameters(map, application);
                     AbstractConfig.appendParameters(map, config);
                     map.put(PATH_KEY, RegistryService.class.getName());
@@ -186,6 +189,20 @@ public class ConfigValidationUtils {
                     if (!map.containsKey(PROTOCOL_KEY)) {
                         map.put(PROTOCOL_KEY, DUBBO_PROTOCOL);
                     }
+                    /*
+                     最后map的内容类似：
+                     "path" -> "org.apache.dubbo.registry.RegistryService"
+                     "protocol" -> "zookeeper"
+                     "application" -> "first-dubbo-provider"
+                     "port" -> "2181"
+                     "release" -> ""
+                     "dubbo" -> "2.0.2"
+                     "pid" -> "81409"
+                     "timestamp" -> "1610803323518"
+                     */
+
+                    // 按照|或者;分割address，将每个address和map拼成一个org.apache.dubbo.common.URL对象，如
+                    // zookeeper://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-provider&dubbo=2.0.2&pid=81450&timestamp=1610803694803
                     List<URL> urls = UrlUtils.parseURLs(address, map);
 
                     for (URL url : urls) {

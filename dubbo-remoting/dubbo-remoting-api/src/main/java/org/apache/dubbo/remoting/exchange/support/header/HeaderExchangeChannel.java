@@ -130,6 +130,9 @@ final class HeaderExchangeChannel implements ExchangeChannel {
         req.setVersion(Version.getProtocolVersion());
         req.setTwoWay(true);
         req.setData(request);
+        // HeaderExchangeHandler的received方法在接收到响应后会调用DefaultFuture的received方法设置结果，而DefaultFuture
+        // 对象还会开启一个定时任务，在timeout后创建一个TimeoutException作为响应，所以这里可以在调用channel.send(req)后直接返回
+        // DefaultFuture对象作为CompletableFuture供客户端获取结果
         DefaultFuture future = DefaultFuture.newFuture(channel, req, timeout, executor);
         try {
             channel.send(req);

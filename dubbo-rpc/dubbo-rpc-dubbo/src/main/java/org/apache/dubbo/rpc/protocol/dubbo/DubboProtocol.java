@@ -117,6 +117,9 @@ public class DubboProtocol extends AbstractProtocol {
             }
 
             Invocation inv = (Invocation) message;
+            // 根据保存在Invocation中的path、version、group等信息获取DubboExporter对象，再返回DubboExporter对象持有的Invoker，
+            // 该invoker默认是DelegateProviderMetaDataInvoker，而DelegateProviderMetaDataInvoker又持有JavassistProxyFactory
+            // 创建的invoker
             Invoker<?> invoker = getInvoker(channel, inv);
             // need to consider backward-compatibility if it's a callback
             if (Boolean.TRUE.toString().equals(inv.getObjectAttachments().get(IS_CALLBACK_SERVICE_INVOKE))) {
@@ -141,8 +144,11 @@ public class DubboProtocol extends AbstractProtocol {
                     return null;
                 }
             }
+            // 保存请求发起方地址到RpcContext.getContext()
             RpcContext.getContext().setRemoteAddress(channel.getRemoteAddress());
+            // 调用本地实现类的方法获取调用结果
             Result result = invoker.invoke(inv);
+            // result默认是AsyncRpcResult类型的，这里添加执行完成后的callback
             return result.thenApply(Function.identity());
         }
 
@@ -158,6 +164,7 @@ public class DubboProtocol extends AbstractProtocol {
 
         @Override
         public void connected(Channel channel) throws RemotingException {
+            // 调用实现类的onconnect方法，如果有的话
             invoke(channel, ON_CONNECT_KEY);
         }
 
@@ -166,6 +173,7 @@ public class DubboProtocol extends AbstractProtocol {
             if (logger.isDebugEnabled()) {
                 logger.debug("disconnected from " + channel.getRemoteAddress() + ",url:" + channel.getUrl());
             }
+            // 调用实现类的ondisconnect方法，如果有的话
             invoke(channel, ON_DISCONNECT_KEY);
         }
 
@@ -279,11 +287,17 @@ public class DubboProtocol extends AbstractProtocol {
 
     @Override
     public <T> Exporter<T> export(Invoker<T> invoker) throws RpcException {
+        // 这里获取到的url类似：
+        // dubbo://192.168.89.104:20880/com.apache.dubbo.demo.api.GreetingService?anyhost=true&application=first-dubbo-provider&bind.ip=192.168.89.104&bind.port=20880&default=true&deprecated=false&dubbo=2.0.2&dynamic=true&generic=false&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=15994&release=&revision=1.0.0&side=provider&timestamp=1612012558371&version=1.0.0
         URL url = invoker.getUrl();
 
         // export service.
+        // 以port、serviceName、version、group组成key，如：dubbo/com.apache.dubbo.demo.api.GreetingService:1.0.0:20880
         String key = serviceKey(url);
+        // DubboExporter只有getInvoker和unexport两个方法，最主要的逻辑是当执行unexport方法是，将当前的DubboExporter从
+        // map中移除
         DubboExporter<T> exporter = new DubboExporter<T>(invoker, key, exporterMap);
+        // 保存当前DubboProtocol对象发布过的服务列表
         exporterMap.put(key, exporter);
 
         //export an stub service for dispatching event
@@ -317,6 +331,7 @@ public class DubboProtocol extends AbstractProtocol {
                 synchronized (this) {
                     server = serverMap.get(key);
                     if (server == null) {
+                        // 创建DubboProtocolServer实例，创建的过程中就开启netty了
                         serverMap.put(key, createServer(url));
                     }
                 }
@@ -343,6 +358,7 @@ public class DubboProtocol extends AbstractProtocol {
 
         ExchangeServer server;
         try {
+            // 获取Exchanger并执行bind，默认实现为HeaderExchanger，bind完成后netty就开始运行了
             server = Exchangers.bind(url, requestHandler);
         } catch (RemotingException e) {
             throw new RpcException("Fail to start server(url: " + url + ") " + e.getMessage(), e);
@@ -356,6 +372,7 @@ public class DubboProtocol extends AbstractProtocol {
             }
         }
 
+        // DubboProtocolServer类没有什么逻辑，只是持有ExchangeServer对象，ExchangeServer对象实现了RemotingServer
         return new DubboProtocolServer(server);
     }
 

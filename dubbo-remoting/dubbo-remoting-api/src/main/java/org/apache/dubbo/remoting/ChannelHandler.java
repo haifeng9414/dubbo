@@ -26,6 +26,7 @@ import org.apache.dubbo.common.extension.SPI;
  * @see org.apache.dubbo.remoting.Transporter#connect(org.apache.dubbo.common.URL, ChannelHandler)
  */
 @SPI
+// 定义通信管道的功能
 public interface ChannelHandler {
 
     /**

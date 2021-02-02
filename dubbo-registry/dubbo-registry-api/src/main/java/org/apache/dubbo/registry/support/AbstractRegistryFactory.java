@@ -125,9 +125,9 @@ public abstract class AbstractRegistryFactory implements RegistryFactory {
          &timestamp=1600003754824
          */
         url = URLBuilder.from(url)
-                .setPath(RegistryService.class.getName())
-                .addParameter(INTERFACE_KEY, RegistryService.class.getName())
-                .removeParameters(EXPORT_KEY, REFER_KEY)
+                .setPath(RegistryService.class.getName()) // 替换path
+                .addParameter(INTERFACE_KEY, RegistryService.class.getName()) // 替换interface参数
+                .removeParameters(EXPORT_KEY, REFER_KEY) // 移除export和refer参数
                 .build();
 
         /*
@@ -146,6 +146,7 @@ public abstract class AbstractRegistryFactory implements RegistryFactory {
         LOCK.lock();
         try {
 
+            // 从缓存中获取Registry
             Registry registry = REGISTRIES.get(key);
             if (registry != null) {
                 return registry;

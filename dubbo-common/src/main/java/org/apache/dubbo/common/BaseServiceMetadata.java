@@ -24,6 +24,7 @@ import org.apache.dubbo.common.utils.StringUtils;
 public class BaseServiceMetadata {
     public static final char COLON_SEPERATOR = ':';
 
+    // 由interfaceName + group + version组成，如dubbo/com.apache.dubbo.demo.api.GreetingService:1.0.0
     protected String serviceKey;
     protected String serviceInterfaceName;
     protected String version;

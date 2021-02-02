@@ -32,11 +32,13 @@ import java.util.Set;
 /**
  * ProviderModel is about published services
  */
+// ProviderModel表示一个服务
 public class ProviderModel {
     private String serviceKey;
     private final Object serviceInstance;
     private final ServiceDescriptor serviceModel;
     private final ServiceConfigBase<?> serviceConfig;
+    // 保存当前这个服务已经发布的服务端的url
     private final List<RegisterStatedURL> urls;
 
     public ProviderModel(String serviceKey,
@@ -88,8 +90,11 @@ public class ProviderModel {
     }
 
     public static class RegisterStatedURL {
+        // 可以看RegistryProtocol的export方法了解该url的创建
         private volatile URL registryUrl;
+        // 保存在注册中心的url
         private volatile URL providerUrl;
+        // 当前url是否被注册到注册中心
         private volatile boolean registered;
 
         public RegisterStatedURL(URL providerUrl,
