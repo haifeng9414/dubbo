@@ -90,16 +90,21 @@ public class DubboInvoker<T> extends AbstractInvoker<T> {
         if (clients.length == 1) {
             currentClient = clients[0];
         } else {
+            // 多个连接则轮训使用
             currentClient = clients[index.getAndIncrement() % clients.length];
         }
         try {
+            // 是否需要服务端作出响应
             boolean isOneway = RpcUtils.isOneway(getUrl(), invocation);
             int timeout = calculateTimeout(invocation, methodName);
             if (isOneway) {
                 boolean isSent = getUrl().getMethodParameter(methodName, Constants.SENT_KEY, false);
+                // 如果是单向请求，直接send即可
                 currentClient.send(inv, isSent);
+                // 直接返回一个结果为null的AsyncRpcResult对象
                 return AsyncRpcResult.newDefaultAsyncResult(invocation);
             } else {
+                // 创建线程池
                 ExecutorService executor = getCallbackExecutor(getUrl(), inv);
                 CompletableFuture<AppResponse> appResponseFuture =
                         currentClient.request(inv, timeout, executor).thenApply(obj -> (AppResponse) obj);

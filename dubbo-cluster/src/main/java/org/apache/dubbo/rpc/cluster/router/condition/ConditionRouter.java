@@ -52,6 +52,7 @@ import static org.apache.dubbo.rpc.cluster.Constants.RUNTIME_KEY;
  * ConditionRouter
  *
  */
+// 该类的实现可以看https://dubbo.apache.org/zh/docs/v2.7/dev/source/router/
 public class ConditionRouter extends AbstractRouter {
     public static final String NAME = "condition";
 

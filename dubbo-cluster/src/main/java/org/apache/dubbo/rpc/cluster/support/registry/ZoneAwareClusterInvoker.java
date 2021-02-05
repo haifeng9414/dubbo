@@ -61,6 +61,7 @@ public class ZoneAwareClusterInvoker<T> extends AbstractClusterInvoker<T> {
         // First, pick the invoker (XXXClusterInvoker) that comes from the local registry, distinguish by a 'preferred' key.
         for (Invoker<T> invoker : invokers) {
             ClusterInvoker<T> clusterInvoker = (ClusterInvoker<T>) invoker;
+            // 如果存在registry.preferred为true的注册中心，则直接使用该注册中心内的服务端
             if (clusterInvoker.isAvailable() && clusterInvoker.getRegistryUrl()
                     .getParameter(REGISTRY_KEY + "." + PREFERRED_KEY, false)) {
                 return clusterInvoker.invoke(invocation);
@@ -68,14 +69,17 @@ public class ZoneAwareClusterInvoker<T> extends AbstractClusterInvoker<T> {
         }
 
         // providers in the registry with the same zone
+        // 获取当前调用配置的registry_zone
         String zone = invocation.getAttachment(REGISTRY_ZONE);
         if (StringUtils.isNotEmpty(zone)) {
+            // 直接调用registry.zone等于当前调用配置的registry_zone的注册中心内的服务端
             for (Invoker<T> invoker : invokers) {
                 ClusterInvoker<T> clusterInvoker = (ClusterInvoker<T>) invoker;
                 if (clusterInvoker.isAvailable() && zone.equals(clusterInvoker.getRegistryUrl().getParameter(REGISTRY_KEY + "." + ZONE_KEY))) {
                     return clusterInvoker.invoke(invocation);
                 }
             }
+            // 如果registry_zone_force不为空，说明强制要求调用需要满足亲和性，但是运行到这说明没有满足的注册中心，直接抛出异常
             String force = invocation.getAttachment(REGISTRY_ZONE_FORCE);
             if (StringUtils.isNotEmpty(force) && "true".equalsIgnoreCase(force)) {
                 throw new IllegalStateException("No registry instance in zone or no available providers in the registry, zone: "
@@ -86,12 +90,14 @@ public class ZoneAwareClusterInvoker<T> extends AbstractClusterInvoker<T> {
 
 
         // load balance among all registries, with registry weight count in.
+        // 通过负载均衡获取invoker
         Invoker<T> balancedInvoker = select(loadbalance, invocation, invokers, null);
         if (balancedInvoker.isAvailable()) {
             return balancedInvoker.invoke(invocation);
         }
 
         // If none of the invokers has a preferred signal or is picked by the loadbalancer, pick the first one available.
+        // 负载均衡失败则遍历找到能用的
         for (Invoker<T> invoker : invokers) {
             ClusterInvoker<T> clusterInvoker = (ClusterInvoker<T>) invoker;
             if (clusterInvoker.isAvailable()) {
@@ -100,6 +106,7 @@ public class ZoneAwareClusterInvoker<T> extends AbstractClusterInvoker<T> {
         }
 
         //if none available,just pick one
+        // 实在不行就选第一个，破罐破摔
         return invokers.get(0).invoke(invocation);
     }
 

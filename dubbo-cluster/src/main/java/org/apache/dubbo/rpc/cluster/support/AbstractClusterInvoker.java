@@ -145,6 +145,9 @@ public abstract class AbstractClusterInvoker<T> implements ClusterInvoker<T> {
             stickyInvoker = null;
         }
         //ignore concurrency problem
+        // 如果要求sticky，则使用stickyInvoker这个已经用过的invoker，但是使用前检查其有效性
+        // selected保存的是这次调用的重试过程中使用过的invoker，如果selected不为空且含有stickyInvoker，说明stickyInvoker已经是不可
+        // 用的了
         if (sticky && stickyInvoker != null && (selected == null || !selected.contains(stickyInvoker))) {
             if (availablecheck && stickyInvoker.isAvailable()) {
                 return stickyInvoker;
@@ -168,9 +171,11 @@ public abstract class AbstractClusterInvoker<T> implements ClusterInvoker<T> {
         if (invokers.size() == 1) {
             return invokers.get(0);
         }
+        // 通过负载均衡器选择一个invoker，默认实现为RandomLoadBalance
         Invoker<T> invoker = loadbalance.select(invokers, getUrl(), invocation);
 
         //If the `invoker` is in the  `selected` or invoker is unavailable && availablecheck is true, reselect.
+        // 如果该invoker在重试期间使用过，说明是不可用的，或invoker已经是不可用的，则重新选择
         if ((selected != null && selected.contains(invoker))
                 || (!invoker.isAvailable() && getUrl() != null && availablecheck)) {
             try {
@@ -182,6 +187,7 @@ public abstract class AbstractClusterInvoker<T> implements ClusterInvoker<T> {
                     int index = invokers.indexOf(invoker);
                     try {
                         //Avoid collision
+                        // 重新选择失败则直接返回下一个invoker
                         invoker = invokers.get((index + 1) % invokers.size());
                     } catch (Exception e) {
                         logger.warn(e.getMessage() + " may because invokers list dynamic change, ignore.", e);
@@ -254,8 +260,11 @@ public abstract class AbstractClusterInvoker<T> implements ClusterInvoker<T> {
             ((RpcInvocation) invocation).addObjectAttachments(contextAttachments);
         }
 
+        // 从Directory获取所有可用的Invoker，默认实现是RegistryDirectory
         List<Invoker<T>> invokers = list(invocation);
+        // 获取负载均衡器，默认为RandomLoadBalance
         LoadBalance loadbalance = initLoadBalance(invokers, invocation);
+        // 向invocation的attachment中添加一个id属性，表示当前invocation的id，id是通过RpcUtils类的AtomicLong属性获取的
         RpcUtils.attachInvocationIdIfAsync(getUrl(), invocation);
         return doInvoke(invocation, invokers, loadbalance);
     }

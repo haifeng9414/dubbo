@@ -50,6 +50,13 @@ public class RouterChain<T> {
         List<RouterFactory> extensionFactories = ExtensionLoader.getExtensionLoader(RouterFactory.class)
                 .getActivateExtension(url, "router");
 
+        // 默认route为：
+        /*
+        MockInvokersSelector
+        TagRouter
+        AppRouter
+        ServiceRouter
+         */
         List<Router> routers = extensionFactories.stream()
                 .map(factory -> factory.getRouter(url))
                 .collect(Collectors.toList());

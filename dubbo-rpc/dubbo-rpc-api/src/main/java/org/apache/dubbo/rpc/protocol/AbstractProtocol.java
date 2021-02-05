@@ -101,6 +101,7 @@ public abstract class AbstractProtocol implements Protocol {
 
     @Override
     public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+        // AsyncToSyncInvoker类的作用是将AsyncRpcResult转换为同步等待（如果调用方法时配置的invokeMode为sync的话）
         return new AsyncToSyncInvoker<>(protocolBindingRefer(type, url));
     }
 

@@ -188,11 +188,15 @@ public class ZookeeperRegistry extends FailbackRegistry {
                     // 创建一个listener
                     ChildListener zkListener = listeners.computeIfAbsent(listener, k -> (parentPath, currentChilds) -> ZookeeperRegistry.this.notify(url, k, toUrlsWithEmpty(url, parentPath, currentChilds)));
                     zkClient.create(path, false);
-                    // 订阅/dubbo/com.apache.dubbo.demo.api.GreetingService/configurators下的变化
+                    // 订阅变化，如/dubbo/com.apache.dubbo.demo.api.GreetingService/configurators下的节点列表
                     List<String> children = zkClient.addChildListener(path, zkListener);
+                    // children为订阅的节点下的节点名列表，通常就是url字符串
                     if (children != null) {
-                        // toUrlsWithEmpty方法根据传入的url参数创建一个新的url并设置protocol为empty
+                        // toUrlsWithEmpty方法会判断传入的url和children是否存在匹配，也就是当前注册中心下是否有满足调用条件的服务
+                        // 端，如果没有则设置新创建的url的protocol为empty，表示当前消费端不允许调用服务端，因为没有可调用的实现，此
+                        // 时根据传入的url创建一个protocol为empty的url，如：
                         // empty://172.19.92.226:20880/com.apache.dubbo.demo.api.GreetingService?anyhost=true&application=first-dubbo-provider&bind.ip=172.19.92.226&bind.port=20880&category=configurators&check=false&default=true&deprecated=false&dubbo=2.0.2&dynamic=true&generic=false&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=92111&release=&revision=1.0.0&side=provider&timestamp=1611735231093&version=1.0.0
+                        // 如果children中存在满足url的，则解析匹配的节点名为url并返回
                         urls.addAll(toUrlsWithEmpty(url, path, children));
                     }
                 }
@@ -305,8 +309,10 @@ public class ZookeeperRegistry extends FailbackRegistry {
     }
 
     private List<URL> toUrlsWithEmpty(URL consumer, String path, List<String> providers) {
+        // 从providers中找到满足consumer的url返回
         List<URL> urls = toUrlsWithoutEmpty(consumer, providers);
         if (urls == null || urls.isEmpty()) {
+            // 不存在满足的provider url则创建一个新的url并设置protocol为empty
             int i = path.lastIndexOf(PATH_SEPARATOR);
             String category = i < 0 ? path : path.substring(i + 1);
             URL empty = URLBuilder.from(consumer)

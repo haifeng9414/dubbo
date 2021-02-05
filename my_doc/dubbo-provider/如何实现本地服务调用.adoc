@@ -1,1 +1,52 @@
-# TODO
+:服务端启动过程: link:服务端启动过程.adoc[服务端启动过程]
+:服务端如何处理调用请求: link:服务端如何处理调用请求.adoc[服务端如何处理调用请求]
+
+= 如何实现本地服务调用
+
+前提：{服务端如何处理调用请求}、{服务端启动过程}
+
+从笔记{服务端启动过程}可知，服务端启动时默认会将自己export到本地以支持本地方法调用，对应的代码在``ServiceConfig``类的``doExportUrlsFor1Protocol``方法：
+[java]
+----
+private void doExportUrlsFor1Protocol(ProtocolConfig protocolConfig, List<URL> registryURLs) {
+
+    ...
+
+    if (!SCOPE_REMOTE.equalsIgnoreCase(scope)) {
+        exportLocal(url);
+    }
+        
+    ...
+}
+
+@SuppressWarnings({"unchecked", "rawtypes"})
+/**
+ * always export injvm
+ */
+private void exportLocal(URL url) {
+    // 本地export和需要被注册到注册中心的export的主要区别在于本地export的url，url的protocol为injvm，所以不会被RegistryProtocol
+    // 处理
+    URL local = URLBuilder.from(url)
+            .setProtocol(LOCAL_PROTOCOL)
+            .setHost(LOCALHOST_VALUE)
+            .setPort(0)
+            .build();
+    Exporter<?> exporter = PROTOCOL.export(
+            // PROXY_FACTORY默认实现为JavassistProxyFactory
+            PROXY_FACTORY.getInvoker(ref, (Class) interfaceClass, local));
+    exporters.add(exporter);
+    logger.info("Export dubbo service " + interfaceClass.getName() + " to local registry url : " + local);
+}
+----
+
+``exportLocal``方法最重要的实现是将url的protocol设置为``injvm``，这样``PROTOCOL.export``调用实际会由``InjvmProtocol``完成。``InjvmProtocol``类的``export``方法实现如下：
+[java]
+----
+@Override
+public <T> Exporter<T> export(Invoker<T> invoker) throws RpcException {
+    // injvm的协议实现很简单，直接传入invoker即可，调用的时候直接调用invoker就相当于直接方法调用
+    return new InjvmExporter<T>(invoker, invoker.getUrl().getServiceKey(), exporterMap);
+}
+----
+
+``InjvmProtocol``类的``export``方法只是简单的返回一个``InjvmExporter``对象，该对象主要作用在于将``invoker``对象维护在``exporterMap``中，没有其他的逻辑，作为对比，可以看``RegistryProtocol``的``export``方法的实现，``RegistryProtocol``的``export``方法会将传入的invoker的url注册到注册中心（默认为zk），之后调用``DubboProtocol``的``export``方法启动netty监听调用请求，以此支持远程方法调用。

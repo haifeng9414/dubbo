@@ -590,6 +590,8 @@ public class ServiceConfig<T> extends ServiceConfigBase<T> {
      * always export injvm
      */
     private void exportLocal(URL url) {
+        // 本地export和需要被注册到注册中心的export的主要区别在于本地export的url，url的protocol为injvm，所以不会被RegistryProtocol
+        // 处理
         URL local = URLBuilder.from(url)
                 .setProtocol(LOCAL_PROTOCOL)
                 .setHost(LOCALHOST_VALUE)

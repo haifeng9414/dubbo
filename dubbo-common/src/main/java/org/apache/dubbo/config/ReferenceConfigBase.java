@@ -224,6 +224,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
         return DUBBO + ".reference." + interfaceName;
     }
 
+    // 解析文件或者环境遍历，判断是否配置了服务端直连
     public void resolveFile() {
         String resolve = System.getProperty(interfaceName);
         String resolveFile = null;
@@ -246,6 +247,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
                 resolve = properties.getProperty(interfaceName);
             }
         }
+        // 解析到地址则保存到url属性作为服务端直连地址
         if (resolve != null && resolve.length() > 0) {
             url = resolve;
             if (logger.isWarnEnabled()) {

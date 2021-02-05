@@ -32,7 +32,63 @@ public class JavassistProxyFactory extends AbstractProxyFactory {
     @Override
     @SuppressWarnings("unchecked")
     public <T> T getProxy(Invoker<T> invoker, Class<?>[] interfaces) {
-        return (T) Proxy.getProxy(interfaces).newInstance(new InvokerInvocationHandler(invoker));
+        /*
+         可以通过在javassist的ClassGenerator类的toClass方法返回前，调用mCtc.writeFile("/Users/donghaifeng/tmp")获取动态生成的
+         类定义，生成的类例子：
+        // Source code recreated from a .class file by IntelliJ IDEA
+        // (powered by Fernflower decompiler)
+        //
+
+        package org.apache.dubbo.common.bytecode;
+
+        import com.alibaba.dubbo.rpc.service.EchoService;
+        import com.apache.dubbo.demo.api.GreetingService;
+        import com.apache.dubbo.demo.api.PoJo;
+        import com.apache.dubbo.demo.api.Result;
+        import java.lang.reflect.InvocationHandler;
+        import java.lang.reflect.Method;
+        import org.apache.dubbo.common.bytecode.ClassGenerator.DC;
+        import org.apache.dubbo.rpc.service.Destroyable;
+
+        public class proxy0 implements DC, GreetingService, Destroyable, EchoService {
+            public static Method[] methods;
+            private InvocationHandler handler;
+
+            // testGeneric和sayHello方法都是GreetingService接口中的
+            public Result testGeneric(PoJo var1) {
+                Object[] var2 = new Object[]{var1};
+                Object var3 = this.handler.invoke(this, methods[0], var2);
+                return (Result)var3;
+            }
+
+            public String sayHello(String var1) {
+                Object[] var2 = new Object[]{var1};
+                Object var3 = this.handler.invoke(this, methods[1], var2);
+                return (String)var3;
+            }
+
+            public Object $echo(Object var1) {
+                Object[] var2 = new Object[]{var1};
+                Object var3 = this.handler.invoke(this, methods[2], var2);
+                return (Object)var3;
+            }
+
+            public void $destroy() {
+                Object[] var1 = new Object[0];
+                this.handler.invoke(this, methods[3], var1);
+            }
+
+            public proxy0() {
+            }
+
+            public proxy0(InvocationHandler var1) {
+                this.handler = var1;
+            }
+        }
+         */
+        final Proxy proxy = Proxy.getProxy(interfaces);
+        // 可以看到上面生成的类构造函数需要传入InvokerInvocationHandler对象
+        return (T) proxy.newInstance(new InvokerInvocationHandler(invoker));
     }
 
     @Override
@@ -40,6 +96,7 @@ public class JavassistProxyFactory extends AbstractProxyFactory {
         // TODO Wrapper cannot handle this scenario correctly: the classname contains '$'
         final Wrapper wrapper = Wrapper.getWrapper(proxy.getClass().getName().indexOf('$') < 0 ? proxy.getClass() : type);
         /*
+        反编译动态生成的类可以通过复制idea的启动命令中classpath部分的值，通过执行javap -classpath xxx className实现
         生成的wrapper如下，主要用于避免反射调用的开销，可以看下面的invokeMethod方法
 //
 // Source code recreated from a .class file by IntelliJ IDEA

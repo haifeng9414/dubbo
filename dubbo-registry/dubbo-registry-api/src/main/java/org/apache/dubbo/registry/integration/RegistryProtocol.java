@@ -480,8 +480,14 @@ public class RegistryProtocol implements Protocol {
     @Override
     @SuppressWarnings("unchecked")
     public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+        // 原url如：
+        // registry://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-consumer&dubbo=2.0.2&pid=65335&refer=application%3Dfirst-dubbo-consumer%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65335%26register.ip%3D172.19.92.226%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612343967799%26version%3D1.0.0&registry=zookeeper&timestamp=1612343967837
+        // 修改url的protocol为其registry参数指定的值，如：
+        // zookeeper://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-consumer&dubbo=2.0.2&pid=65317&refer=application%3Dfirst-dubbo-consumer%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65317%26register.ip%3D172.19.92.226%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612343890983%26version%3D1.0.0&timestamp=1612343894119
         url = getRegistryUrl(url);
+        // 获取对应的注册中心实现，如ZookeeperRegistry
         Registry registry = registryFactory.getRegistry(url);
+        // 如果当前消费端正在调用的是RegistryService接口的方法，直接根据当前注册中心对象创建invoker即可
         if (RegistryService.class.equals(type)) {
             return proxyFactory.getInvoker((T) registry, type, url);
         }
@@ -491,34 +497,51 @@ public class RegistryProtocol implements Protocol {
         String group = qs.get(GROUP_KEY);
         if (group != null && group.length() > 0) {
             if ((COMMA_SPLIT_PATTERN.split(group)).length > 1 || "*".equals(group)) {
+                // 如果配置了多个group、或者group为*，则表示需要采用分组聚合的方式调用服务端，具体功能：
+                // https://dubbo.apache.org/zh/docs/v2.7/user/examples/group-merger/
+                // 这里设置Cluster为MergeableClusterInvoker以实现分组聚合
                 return doRefer(Cluster.getCluster(MergeableCluster.NAME), registry, type, url);
             }
         }
 
+        // 获取消费端指定的Cluster，默认为FailoverCluster
         Cluster cluster = Cluster.getCluster(qs.get(CLUSTER_KEY));
         return doRefer(cluster, registry, type, url);
     }
 
     private <T> Invoker<T> doRefer(Cluster cluster, Registry registry, Class<T> type, URL url) {
+        // RegistryDirectory对象保存了消费者的配置和url等信息
         RegistryDirectory<T> directory = new RegistryDirectory<T>(type, url);
         directory.setRegistry(registry);
         directory.setProtocol(protocol);
         // all attributes of REFER_KEY
         Map<String, String> parameters = new HashMap<String, String>(directory.getConsumerUrl().getParameters());
+        // 创建订阅url，如：
+        // consumer://172.19.92.226/com.apache.dubbo.demo.api.GreetingService?application=first-dubbo-consumer&dubbo=2.0.2&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=65594&revision=1.0.0&side=consumer&sticky=false&timeout=5000&timestamp=1612345441612&version=1.0.0
         URL subscribeUrl = new URL(CONSUMER_PROTOCOL, parameters.remove(REGISTER_IP_KEY), 0, type.getName(), parameters);
+        // 判断消费端是否需要注册到注册中心，默认为true
         if (directory.isShouldRegister()) {
             directory.setRegisteredConsumerUrl(subscribeUrl);
+            // 类似服务端注册到注册中心的过程，这里将消费者的url注册到注册中心，如zk会存在如下节点：
+            /*
+            get /dubbo/com.apache.dubbo.demo.api.GreetingService/consumers/consumer%3A%2F%2F172.19.92.226%2Fcom.apache.dubbo.demo.api.GreetingService%3Fapplication%3Dfirst-dubbo-consumer%26category%3Dconsumers%26check%3Dfalse%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65875%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612345601845%26version%3D1.0.0
+            节点值：消费端的ip
+             */
             registry.register(directory.getRegisteredConsumerUrl());
         }
+        // 初始化RouterChain
         directory.buildRouterChain(subscribeUrl);
+        // toSubscribeUrl方法为传入的url加上category参数，参数值为providers,configurators,routers，即需要订阅providers,configurators,routers
+        // 这3个配置的变化
         directory.subscribe(toSubscribeUrl(subscribeUrl));
-
+        // cluster默认实现为FailoverCluster，该cluster直接返回FailoverClusterInvoker对象
         Invoker<T> invoker = cluster.join(directory);
         List<RegistryProtocolListener> listeners = findRegistryProtocolListeners(url);
         if (CollectionUtils.isEmpty(listeners)) {
             return invoker;
         }
 
+        // RegistryProtocolListener不为空则遍历调用onRefer方法
         RegistryInvokerWrapper<T> registryInvokerWrapper = new RegistryInvokerWrapper<>(directory, cluster, invoker);
         for (RegistryProtocolListener listener : listeners) {
             listener.onRefer(this, registryInvokerWrapper);

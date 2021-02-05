@@ -1,0 +1,950 @@
+:服务端启动过程: link:dubbo-provider/服务端启动过程.adoc[服务端启动过程]
+:如何实现本地服务调用: link:dubbo-provider/如何实现本地服务调用.adoc[如何实现本地服务调用]
+:服务端如何处理调用请求: link:dubbo-provider/服务端如何处理调用请求.adoc[服务端如何处理调用请求]
+
+= 消费端启动过程
+
+前提：{服务端启动过程}
+
+消费端启动过程和{服务端启动过程}类似，理解了{服务端启动过程}，那么消费端启动过了也就很好理解了。入口在``ReferenceConfig``的``get``方法，该方法调用``init()``方法执行启动过程：
+[java]
+----
+public synchronized T get() {
+    if (destroyed) {
+        throw new IllegalStateException("The invoker of ReferenceConfig(" + url + ") has already destroyed!");
+    }
+    // ref为代理（默认通过Javassist生成代理），通过该代理能够调用服务端的方法，如果当前引用为空，则先初始化
+    if (ref == null) {
+        init();
+    }
+    return ref;
+}
+
+public synchronized void init() {
+        if (initialized) {
+            return;
+        }
+
+        if (bootstrap == null) {
+            bootstrap = DubboBootstrap.getInstance();
+            bootstrap.init();
+        }
+
+        // 初始化各个属性
+        checkAndUpdateSubConfigs();
+
+        // 检查当前的stub配置是否合法，stub属性为远程服务的接口类
+        checkStubAndLocal(interfaceClass);
+        // 检查mock配置师傅合法
+        ConfigValidationUtils.checkMock(interfaceClass, this);
+
+        Map<String, String> map = new HashMap<String, String>();
+        // 标识当前为消费端
+        map.put(SIDE_KEY, CONSUMER_SIDE);
+
+        // 添加dubbo版本、pid、时间戳等信息到map
+        ReferenceConfigBase.appendRuntimeParameters(map);
+        if (!ProtocolUtils.isGeneric(generic)) {
+            String revision = Version.getVersion(interfaceClass, version);
+            if (revision != null && revision.length() > 0) {
+                map.put(REVISION_KEY, revision);
+            }
+
+            // 获取当前接口所有的方法并保存到map中
+            String[] methods = Wrapper.getWrapper(interfaceClass).getMethodNames();
+            if (methods.length == 0) {
+                logger.warn("No method found in service interface " + interfaceClass.getName());
+                map.put(METHODS_KEY, ANY_VALUE);
+            } else {
+                map.put(METHODS_KEY, StringUtils.join(new HashSet<String>(Arrays.asList(methods)), COMMA_SEPARATOR));
+            }
+        }
+        // 添加其他属性到map
+        map.put(INTERFACE_KEY, interfaceName);
+        AbstractConfig.appendParameters(map, getMetrics());
+        AbstractConfig.appendParameters(map, getApplication());
+        AbstractConfig.appendParameters(map, getModule());
+        // remove 'default.' prefix for configs from ConsumerConfig
+        // appendParameters(map, consumer, Constants.DEFAULT_KEY);
+        AbstractConfig.appendParameters(map, consumer);
+        AbstractConfig.appendParameters(map, this);
+        MetadataReportConfig metadataReportConfig = getMetadataReportConfig();
+        if (metadataReportConfig != null && metadataReportConfig.isValid()) {
+            map.putIfAbsent(METADATA_KEY, REMOTE_METADATA_STORAGE_TYPE);
+        }
+        Map<String, AsyncMethodInfo> attributes = null;
+        // 如果对方法进行了配置，则将方法相关的配置保存到map
+        if (CollectionUtils.isNotEmpty(getMethods())) {
+            attributes = new HashMap<>();
+            for (MethodConfig methodConfig : getMethods()) {
+                AbstractConfig.appendParameters(map, methodConfig, methodConfig.getName());
+                String retryKey = methodConfig.getName() + ".retry";
+                if (map.containsKey(retryKey)) {
+                    String retryValue = map.remove(retryKey);
+                    if ("false".equals(retryValue)) {
+                        map.put(methodConfig.getName() + ".retries", "0");
+                    }
+                }
+                // 根据MethodConfig对象创建AsyncMethodInfo对象
+                AsyncMethodInfo asyncMethodInfo = AbstractConfig.convertMethodConfig2AsyncInfo(methodConfig);
+                if (asyncMethodInfo != null) {
+//                    consumerModel.getMethodModel(methodConfig.getName()).addAttribute(ASYNC_KEY, asyncMethodInfo);
+                    attributes.put(methodConfig.getName(), asyncMethodInfo);
+                }
+            }
+        }
+
+        // 获取当前消费者的地址，该地址会被添加到注册中心
+        String hostToRegistry = ConfigUtils.getSystemProperty(DUBBO_IP_TO_REGISTRY);
+        if (StringUtils.isEmpty(hostToRegistry)) {
+            hostToRegistry = NetUtils.getLocalHost();
+        } else if (isInvalidLocalHost(hostToRegistry)) {
+            throw new IllegalArgumentException("Specified invalid registry ip from property:" + DUBBO_IP_TO_REGISTRY + ", value:" + hostToRegistry);
+        }
+        map.put(REGISTER_IP_KEY, hostToRegistry);
+
+        serviceMetadata.getAttachments().putAll(map);
+
+        // 创建代理，通过代理就能调用远程方法
+        ref = createProxy(map);
+
+        serviceMetadata.setTarget(ref);
+        serviceMetadata.addAttribute(PROXY_CLASS_REF, ref);
+        ConsumerModel consumerModel = repository.lookupReferredService(serviceMetadata.getServiceKey());
+        consumerModel.setProxyObject(ref);
+        consumerModel.init(attributes);
+
+        initialized = true;
+
+        // 检查远端服务是否可用
+        checkInvokerAvailable();
+
+        // dispatch a ReferenceConfigInitializedEvent since 2.7.4
+        // 发布ReferenceConfigInitializedEvent事件
+        dispatch(new ReferenceConfigInitializedEvent(this, invoker));
+    }
+----
+
+``init()``方法中的配置初始化过程就不赘述了，和{服务端启动过程}类似，``init()``方法最关键的调用是``createProxy(map)``，该方法返回了一个代理对象，通过该对象能够调用服务端的方法，下面分析该对象的创建过程：
+[java]
+----
+@SuppressWarnings({"unchecked", "rawtypes", "deprecation"})
+private T createProxy(Map<String, String> map) {
+    if (shouldJvmRefer(map)) {
+        // 创建本地调用的url，该url的protocol为injvm，和服务端的exportLocal方法一致
+        URL url = new URL(LOCAL_PROTOCOL, LOCALHOST_VALUE, 0, interfaceClass.getName()).addParameters(map);
+        // 获取本地服务的引用，默认实现为InjvmProtocol，InjvmProtocol通过其持有的exporterMap获取服务端执行本地export时添加的
+        // invoker，通过该invoker就可以调用本地服务端实现类
+        invoker = REF_PROTOCOL.refer(interfaceClass, url);
+        if (logger.isInfoEnabled()) {
+            logger.info("Using injvm service " + interfaceClass.getName());
+        }
+    } else {
+        urls.clear();
+        // 如果指定了服务端的地址，则直接使用改地址调用服务端，对于url属性的设置，可以看resolveFile方法
+        if (url != null && url.length() > 0) { // user specified URL, could be peer-to-peer address, or register center's address.
+            String[] us = SEMICOLON_SPLIT_PATTERN.split(url);
+            if (us != null && us.length > 0) {
+                for (String u : us) {
+                    URL url = URL.valueOf(u);
+                    if (StringUtils.isEmpty(url.getPath())) {
+                        url = url.setPath(interfaceName);
+                    }
+                    if (UrlUtils.isRegistry(url)) {
+                        urls.add(url.addParameterAndEncoded(REFER_KEY, StringUtils.toQueryString(map)));
+                    } else {
+                        urls.add(ClusterUtils.mergeUrl(url, map));
+                    }
+                }
+            }
+        } else { // assemble URL from register center's configuration
+            // if protocols not injvm checkRegistry
+            if (!LOCAL_PROTOCOL.equalsIgnoreCase(getProtocol())) {
+                // 检查注册中心的配置是否合法
+                checkRegistry();
+                // 和ServiceConfig类似，获取注册中心的url，如：
+                // registry://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-consumer&dubbo=2.0.2&pid=65091&registry=zookeeper&timestamp=1612342566506
+                List<URL> us = ConfigValidationUtils.loadRegistries(this, false);
+                if (CollectionUtils.isNotEmpty(us)) {
+                    for (URL u : us) {
+                        URL monitorUrl = ConfigValidationUtils.loadMonitor(this, u);
+                        if (monitorUrl != null) {
+                            map.put(MONITOR_KEY, URL.encode(monitorUrl.toFullString()));
+                        }
+                        // 将注册中心的url保存到urls中，作为之后将被使用的服务端调用地址
+                        // 和ServiceConfig类似，将当前消费端的配置保存到生成的注册中心url中，不同的是ServiceConfig以export
+                        // 为key，这里以refer为key
+                        urls.add(u.addParameterAndEncoded(REFER_KEY, StringUtils.toQueryString(map)));
+                    }
+                }
+                if (urls.isEmpty()) {
+                    throw new IllegalStateException("No such any registry to reference " + interfaceName + " on the consumer " + NetUtils.getLocalHost() + " use dubbo version " + Version.getVersion() + ", please config <dubbo:registry address=\"...\" /> to your spring config.");
+                }
+            }
+        }
+
+        if (urls.size() == 1) {
+            // 如果只有一个注册中心，直接返回其invoker即可
+            invoker = REF_PROTOCOL.refer(interfaceClass, urls.get(0));
+        } else {
+            // 多个注册中心需要组成一个集群，并合并成一个invoker
+            List<Invoker<?>> invokers = new ArrayList<Invoker<?>>();
+            URL registryURL = null;
+            // 遍历所有注册中心url，转换为invoker
+            for (URL url : urls) {
+                invokers.add(REF_PROTOCOL.refer(interfaceClass, url));
+                if (UrlUtils.isRegistry(url)) {
+                    registryURL = url; // use last registry url
+                }
+            }
+            if (registryURL != null) { // registry url is available
+                // for multi-subscription scenario, use 'zone-aware' policy by default
+                // 获取集群的名称，默认为zone-aware，所以这里默认Cluster对象实现为ZoneAwareCluster
+                String cluster = registryURL.getParameter(CLUSTER_KEY, ZoneAwareCluster.NAME);
+                // The invoker wrap sequence would be: ZoneAwareClusterInvoker(StaticDirectory) -> FailoverClusterInvoker(RegistryDirectory, routing happens here) -> Invoker
+                invoker = Cluster.getCluster(cluster, false).join(new StaticDirectory(registryURL, invokers));
+            } else { // not a registry url, must be direct invoke.
+                String cluster = CollectionUtils.isNotEmpty(invokers)
+                        ? (invokers.get(0).getUrl() != null ? invokers.get(0).getUrl().getParameter(CLUSTER_KEY, ZoneAwareCluster.NAME) : Cluster.DEFAULT)
+                        : Cluster.DEFAULT;
+                invoker = Cluster.getCluster(cluster).join(new StaticDirectory(invokers));
+            }
+        }
+    }
+
+    if (logger.isInfoEnabled()) {
+        logger.info("Refer dubbo service " + interfaceClass.getName() + " from url " + invoker.getUrl());
+    }
+    /**
+     * @since 2.7.0
+     * ServiceData Store
+     */
+    String metadata = map.get(METADATA_KEY);
+    WritableMetadataService metadataService = WritableMetadataService.getExtension(metadata == null ? DEFAULT_METADATA_STORAGE_TYPE : metadata);
+    if (metadataService != null) {
+        URL consumerURL = new URL(CONSUMER_PROTOCOL, map.remove(REGISTER_IP_KEY), 0, map.get(INTERFACE_KEY), map);
+        metadataService.publishServiceDefinition(consumerURL);
+    }
+    // create service proxy
+    // 创建代理，默认实现为JavassistProxyFactory
+    return (T) PROXY_FACTORY.getProxy(invoker, ProtocolUtils.isGeneric(generic));
+}
+----
+
+``createProxy``方法首先判断是否是本地调用，关于本地调用，可以看笔记{如何实现本地服务调用}，这里不再赘述。在执行远程调用的情况下，如果消费端配置了服务端的地址，则直接使用该地址作为之后将访问的远程服务端的地址，否则根据消费端配置的``RegistryConfig``对象获取注册中心的url，之后会以该url作为服务端的地址传入到invoker的创建过程，这一步和{服务端启动过程}中``ServiceConfig``类的``doExportUrlsFor1Protocol``方法的处理是一样的，不同的是对于消费端的配置，会被保存到注册中心url的refer属性，而服务端启动时会将服务端配置保存到注册中心的export属性。获取到注册中心url后，如果只有一个，直接转化为``Invoker``对象，否则分别将注册中心转换为``Invoker``对象，并通过``Cluster``和``Directory``将多个``Invoker``对象合并为一个支持亲和性和负载均衡等特性的``Invoker``对象，``Cluster``和``Directory``在下面的分析过程中还会碰到，这里先看只有一个url的情况，对应的调用：
+[java]
+----
+if (urls.size() == 1) {
+    // 如果只有一个注册中心，直接返回其invoker即可
+    invoker = REF_PROTOCOL.refer(interfaceClass, urls.get(0));
+} 
+----
+
+这里``REF_PROTOCOL``是``Protocol``接口的适配器，默认实现为``RegistryProtocol``类，其``refer``方法代码如下：
+[java]
+----
+@Override
+@SuppressWarnings("unchecked")
+public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+    // 原url如：
+    // registry://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-consumer&dubbo=2.0.2&pid=65335&refer=application%3Dfirst-dubbo-consumer%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65335%26register.ip%3D172.19.92.226%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612343967799%26version%3D1.0.0&registry=zookeeper&timestamp=1612343967837
+    // 修改url的protocol为其registry参数指定的值，如：
+    // zookeeper://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService?application=first-dubbo-consumer&dubbo=2.0.2&pid=65317&refer=application%3Dfirst-dubbo-consumer%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65317%26register.ip%3D172.19.92.226%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612343890983%26version%3D1.0.0&timestamp=1612343894119
+    url = getRegistryUrl(url);
+    // 获取对应的注册中心实现，如ZookeeperRegistry
+    Registry registry = registryFactory.getRegistry(url);
+    // 如果当前消费端正在调用的是RegistryService接口的方法，直接根据当前注册中心对象创建invoker即可
+    if (RegistryService.class.equals(type)) {
+        return proxyFactory.getInvoker((T) registry, type, url);
+    }
+
+    // group="a,b" or group="*"
+    Map<String, String> qs = StringUtils.parseQueryString(url.getParameterAndDecoded(REFER_KEY));
+    String group = qs.get(GROUP_KEY);
+    if (group != null && group.length() > 0) {
+        if ((COMMA_SPLIT_PATTERN.split(group)).length > 1 || "*".equals(group)) {
+            // 如果配置了多个group、或者group为*，则表示需要采用分组聚合的方式调用服务端，具体功能：
+            // https://dubbo.apache.org/zh/docs/v2.7/user/examples/group-merger/
+            // 这里设置Cluster为MergeableClusterInvoker以实现分组聚合
+            return doRefer(Cluster.getCluster(MergeableCluster.NAME), registry, type, url);
+        }
+    }
+
+    // 获取消费端指定的Cluster，默认为FailoverCluster
+    Cluster cluster = Cluster.getCluster(qs.get(CLUSTER_KEY));
+    return doRefer(cluster, registry, type, url);
+}
+----
+
+``refer``方法判断消费端是否配置了grouop属性，表示需要对调用结果link:https://dubbo.apache.org/zh/docs/v2.7/user/examples/group-merger/[分组聚合]，如果设置了则使用``MergeableCluster``作为``Cluster``实现类，具体分组聚合的过程可以看``MergeableCluster``类的注释，这里不再赘述。这里主要看默认情况下``refer``方法的处理，也就是下面的调用：
+[java]
+----
+// 获取消费端指定的Cluster，默认为FailoverCluster
+Cluster cluster = Cluster.getCluster(qs.get(CLUSTER_KEY));
+return doRefer(cluster, registry, type, url);
+----
+
+上面的代码根据消费端配置的cluster参数获取``Cluster``对象，默认为``FailoverCluster``，之后调用``doRefer``方法，代码：
+[java]
+----
+private <T> Invoker<T> doRefer(Cluster cluster, Registry registry, Class<T> type, URL url) {
+    // RegistryDirectory对象保存了消费者的配置和url等信息
+    RegistryDirectory<T> directory = new RegistryDirectory<T>(type, url);
+    directory.setRegistry(registry);
+    directory.setProtocol(protocol);
+    // all attributes of REFER_KEY
+    Map<String, String> parameters = new HashMap<String, String>(directory.getConsumerUrl().getParameters());
+    // 创建订阅url，如：
+    // consumer://172.19.92.226/com.apache.dubbo.demo.api.GreetingService?application=first-dubbo-consumer&dubbo=2.0.2&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=65594&revision=1.0.0&side=consumer&sticky=false&timeout=5000&timestamp=1612345441612&version=1.0.0
+    URL subscribeUrl = new URL(CONSUMER_PROTOCOL, parameters.remove(REGISTER_IP_KEY), 0, type.getName(), parameters);
+    // 判断消费端是否需要注册到注册中心，默认为true
+    if (directory.isShouldRegister()) {
+        directory.setRegisteredConsumerUrl(subscribeUrl);
+        // 类似服务端注册到注册中心的过程，这里将消费者的url注册到注册中心，如zk会存在如下节点：
+        /*
+        get /dubbo/com.apache.dubbo.demo.api.GreetingService/consumers/consumer%3A%2F%2F172.19.92.226%2Fcom.apache.dubbo.demo.api.GreetingService%3Fapplication%3Dfirst-dubbo-consumer%26category%3Dconsumers%26check%3Dfalse%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65875%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612345601845%26version%3D1.0.0
+        节点值：消费端的ip
+         */
+        registry.register(directory.getRegisteredConsumerUrl());
+    }
+    // 初始化RouterChain
+    directory.buildRouterChain(subscribeUrl);
+    // toSubscribeUrl方法为传入的url加上category参数，参数值为providers,configurators,routers，即需要订阅providers,configurators,routers
+    // 这3个配置的变化
+    directory.subscribe(toSubscribeUrl(subscribeUrl));
+    // cluster默认实现为FailoverCluster，该cluster直接返回FailoverClusterInvoker对象
+    Invoker<T> invoker = cluster.join(directory);
+    List<RegistryProtocolListener> listeners = findRegistryProtocolListeners(url);
+    if (CollectionUtils.isEmpty(listeners)) {
+        return invoker;
+    }
+
+    // RegistryProtocolListener不为空则遍历调用onRefer方法
+    RegistryInvokerWrapper<T> registryInvokerWrapper = new RegistryInvokerWrapper<>(directory, cluster, invoker);
+    for (RegistryProtocolListener listener : listeners) {
+        listener.onRefer(this, registryInvokerWrapper);
+    }
+    return registryInvokerWrapper;
+}
+----
+
+``doRefer``方法调用注册中心对象的``register``方法将当前消费端注册到注册中心，对于默认注册中心的实现``ZookeeperRegistry``类，该方法执行后会在zk创建/dubbo/serviceInterface/consumers/consumerUrl节点，节点内容为消费端的地址，这一过程和服务端的注册是类似的。
+
+注册完成后，调用``directory.buildRouterChain(subscribeUrl);``初始化``RouterChain``对象，该对象的构造函数会初始化``Route``对象，``Route``对象的作用是对找到的服务端invoker进行过程，只留下满足消费端调用条件的服务端invoker，默认支持按照condition和tag过滤服务端，具体配置可以看官网的link:https://dubbo.apache.org/zh/docs/v2.7/user/examples/routing-rule/[路由规则]和link:https://dubbo.apache.org/zh/docs/v2.7/dev/source/router/[路由实现细节]。路由的实现不是消费端启动过程的关键，这里不做分析。
+
+再之后``doRefer``方法调用``directory.subscribe(toSubscribeUrl(subscribeUrl))``完成注册中心的``providers,configurators,routers``的订阅，``subscribe``方法代码：
+[java]
+----
+public void subscribe(URL url) {
+    setConsumerUrl(url);
+    // CONSUMER_CONFIGURATION_LISTENER的构造函数会将自己添加到GovernanceRuleRepository监听配置变化，key为消费端配置的
+    // application属性的值，如first-dubbo-consumer，当配置变化时又会更新其持有的listener，这里将当前RegistryDirectory对
+    // 象添加为其listener，当配置发生变化时会被调用refreshOverrideAndInvoker方法
+    CONSUMER_CONFIGURATION_LISTENER.addNotifyListener(this);
+    // ReferenceConfigurationListener同上，只不过监听的key是url对应的服务端configurators的变化，如/dubbo/com.apache.dubbo.demo.api.GreetingService/configurators,
+    serviceConfigurationListener = new ReferenceConfigurationListener(this, url);
+    // 添加当前对象为listener，默认监听providers、configurators、routers的变化，变化时会被调用notify方法，如
+    /*
+    dubbo/com.apache.dubbo.demo.api.GreetingService/providers
+    dubbo/com.apache.dubbo.demo.api.GreetingService/configurators
+    dubbo/com.apache.dubbo.demo.api.GreetingService/routers
+     */
+    // registry默认实现为ZookeeperRegistry，其会在doSubscribe的最后调用一次notify方法，会传入监听的zk节点下的数据
+    registry.subscribe(url, this);
+}
+----
+
+上面的配置使得``RegistryDirectory``对象作为监听器监听服务端在注册中心的``providers,configurators,routers``节点的配置变化，当配置发生变化时，``RegistryDirectory``对象``notify``方法会被调用，方法参数是注册中心中最新的providers或configurators或routers节点下的url列表，每个列表就代表一个服务端配置，该方法代码：
+[java]
+----
+@Override
+public synchronized void notify(List<URL> urls) {
+    Map<String, List<URL>> categoryUrls = urls.stream()
+            .filter(Objects::nonNull)
+            .filter(this::isValidCategory) // 判断url的category参数是否合法
+            .filter(this::isNotCompatibleFor26x)
+            .collect(Collectors.groupingBy(this::judgeCategory)); // 根据url的category参数分组
+
+    // 获取configurators下的url
+    List<URL> configuratorURLs = categoryUrls.getOrDefault(CONFIGURATORS_CATEGORY, Collections.emptyList());
+    // 根据url获取Configurator对象
+    this.configurators = Configurator.toConfigurators(configuratorURLs).orElse(this.configurators);
+
+    // 获取routes下的url
+    List<URL> routerURLs = categoryUrls.getOrDefault(ROUTERS_CATEGORY, Collections.emptyList());
+    // 根据url获取route对象
+    toRouters(routerURLs).ifPresent(this::addRouters);
+
+    // providers
+    List<URL> providerURLs = categoryUrls.getOrDefault(PROVIDERS_CATEGORY, Collections.emptyList());
+    /**
+     * 3.x added for extend URL address
+     */
+    // 回调AddressListener对象通知最新的provider url列表
+    ExtensionLoader<AddressListener> addressListenerExtensionLoader = ExtensionLoader.getExtensionLoader(AddressListener.class);
+    List<AddressListener> supportedListeners = addressListenerExtensionLoader.getActivateExtension(getUrl(), (String[]) null);
+    if (supportedListeners != null && !supportedListeners.isEmpty()) {
+        for (AddressListener addressListener : supportedListeners) {
+            providerURLs = addressListener.notify(providerURLs, getConsumerUrl(),this);
+        }
+    }
+    refreshOverrideAndInvoker(providerURLs);
+}
+
+private void refreshOverrideAndInvoker(List<URL> urls) {
+    // mock zookeeper://xxx?mock=return null
+    // 通过Configurator对象定制当前url
+    overrideDirectoryUrl();
+    // 根据url获取最新的服务端url
+    refreshInvoker(urls);
+}
+----
+
+上面的方法最终调用``refreshOverrideAndInvoker`方法，该方法调用``refreshInvoker``方法根据最新的服务端url列表刷新服务端invoker列表，代码如下：
+[java]
+----
+private void refreshInvoker(List<URL> invokerUrls) {
+    // invokerUrls为服务端的url列表，如：
+    // dubbo://172.19.92.226:20880/com.apache.dubbo.demo.api.GreetingService?anyhost=true&application=first-dubbo-provider&default=true&deprecated=false&dubbo=2.0.2&dynamic=true&generic=false&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=47677&release=&revision=1.0.0&side=provider&timestamp=1612259867019&version=1.0.0
+    Assert.notNull(invokerUrls, "invokerUrls should not be null");
+
+    // 当服务端url只有一个是，判读其protocol是否为empty，是则说明没有满足当前消费端调用条件的服务端，关于protocol为empty的实现，
+    // 可以看ZookeeperRegistry的doSubscribe方法
+    if (invokerUrls.size() == 1
+            && invokerUrls.get(0) != null
+            && EMPTY_PROTOCOL.equals(invokerUrls.get(0).getProtocol())) {
+        // 标记不允许当前消费端进行远程调用
+        this.forbidden = true; // Forbid to access
+        this.invokers = Collections.emptyList();
+        routerChain.setInvokers(this.invokers);
+        destroyAllInvokers(); // Close all invokers
+    } else {
+        this.forbidden = false; // Allow to access
+        Map<String, Invoker<T>> oldUrlInvokerMap = this.urlInvokerMap; // local reference
+        if (invokerUrls == Collections.<URL>emptyList()) {
+            invokerUrls = new ArrayList<>();
+        }
+        if (invokerUrls.isEmpty() && this.cachedInvokerUrls != null) {
+            invokerUrls.addAll(this.cachedInvokerUrls);
+        } else {
+            this.cachedInvokerUrls = new HashSet<>();
+            this.cachedInvokerUrls.addAll(invokerUrls);//Cached invoker urls, convenient for comparison
+        }
+        if (invokerUrls.isEmpty()) {
+            return;
+        }
+        // toInvokers方法调用protocol.refer方法根据url创建url对应的invoker，创建的invoker是支持远程调用的，默认实现为DubboProtocol
+        // 如果是已知的url（保存在urlInvokerMap属性中），则之前创建的invoker会直接复用
+        Map<String, Invoker<T>> newUrlInvokerMap = toInvokers(invokerUrls);// Translate url list to Invoker map
+
+        /**
+         * If the calculation is wrong, it is not processed.
+         *
+         * 1. The protocol configured by the client is inconsistent with the protocol of the server.
+         *    eg: consumer protocol = dubbo, provider only has other protocol services(rest).
+         * 2. The registration center is not robust and pushes illegal specification data.
+         *
+         */
+        if (CollectionUtils.isEmptyMap(newUrlInvokerMap)) {
+            logger.error(new IllegalStateException("urls to invokers error .invokerUrls.size :" + invokerUrls.size() + ", invoker.size :0. urls :" + invokerUrls
+                    .toString()));
+            return;
+        }
+
+        List<Invoker<T>> newInvokers = Collections.unmodifiableList(new ArrayList<>(newUrlInvokerMap.values()));
+        // pre-route and build cache, notice that route cache should build on original Invoker list.
+        // toMergeMethodInvokerMap() will wrap some invokers having different groups, those wrapped invokers not should be routed.
+        // 通知route最新的invoker列表
+        routerChain.setInvokers(newInvokers);
+        // 如果消费端对服务端的group有要求，则调用toMergeInvokerList方法根据invoker的group值进行分组，并为每个分组创建一个
+        // StaticDirectory对象，通过Cluster对象将StaticDirectory对象转换为一个invoker，这样是的同一group下的invoker被封装
+        // 为一个invoker了
+        this.invokers = multiGroup ? toMergeInvokerList(newInvokers) : newInvokers;
+        this.urlInvokerMap = newUrlInvokerMap;
+
+        try {
+            // 不在最新的invoker列表中的invoker调用destroy方法
+            destroyUnusedInvokers(oldUrlInvokerMap, newUrlInvokerMap); // Close the unused Invoker
+        } catch (Exception e) {
+            logger.warn("destroyUnusedInvokers error. ", e);
+        }
+    }
+}
+----
+
+``refreshOverrideAndInvoker`方法通过``toInvokers``方法将url转换为invoker，该方法代码如下：
+[java]
+----
+private Map<String, Invoker<T>> toInvokers(List<URL> urls) {
+    Map<String, Invoker<T>> newUrlInvokerMap = new HashMap<>();
+    if (urls == null || urls.isEmpty()) {
+        return newUrlInvokerMap;
+    }
+    Set<String> keys = new HashSet<>();
+    // 获取消费端的protocol配置
+    String queryProtocols = this.queryMap.get(PROTOCOL_KEY);
+    for (URL providerUrl : urls) {
+        // If protocol is configured at the reference side, only the matching protocol is selected
+        // 如果消费端配置了protocol，则根据protocol对url进行过滤
+        if (queryProtocols != null && queryProtocols.length() > 0) {
+            boolean accept = false;
+            String[] acceptProtocols = queryProtocols.split(",");
+            for (String acceptProtocol : acceptProtocols) {
+                if (providerUrl.getProtocol().equals(acceptProtocol)) {
+                    accept = true;
+                    break;
+                }
+            }
+            if (!accept) {
+                continue;
+            }
+        }
+        // empty的url表示不允许被调用
+        if (EMPTY_PROTOCOL.equals(providerUrl.getProtocol())) {
+            continue;
+        }
+        // 判断当前url的protocol是否存在对应的实现类
+        if (!ExtensionLoader.getExtensionLoader(Protocol.class).hasExtension(providerUrl.getProtocol())) {
+            logger.error(new IllegalStateException("Unsupported protocol " + providerUrl.getProtocol() +
+                    " in notified url: " + providerUrl + " from registry " + getUrl().getAddress() +
+                    " to consumer " + NetUtils.getLocalHost() + ", supported protocol: " +
+                    ExtensionLoader.getExtensionLoader(Protocol.class).getSupportedExtensions()));
+            continue;
+        }
+        // 合并消费端和服务端对url的配置，消费端的配置优先级更高
+        URL url = mergeUrl(providerUrl);
+
+        String key = url.toFullString(); // The parameter urls are sorted
+        // 重复的url
+        if (keys.contains(key)) { // Repeated url
+            continue;
+        }
+        keys.add(key);
+        // Cache key is url that does not merge with consumer side parameters, regardless of how the consumer combines parameters, if the server url changes, then refer again
+        // 本地保存的已知的服务端url
+        Map<String, Invoker<T>> localUrlInvokerMap = this.urlInvokerMap; // local reference
+        Invoker<T> invoker = localUrlInvokerMap == null ? null : localUrlInvokerMap.get(key);
+        // 为空说明当前url是新的
+        if (invoker == null) { // Not in the cache, refer again
+            try {
+                boolean enabled = true;
+                // 判断是否被禁用了
+                if (url.hasParameter(DISABLED_KEY)) {
+                    enabled = !url.getParameter(DISABLED_KEY, false);
+                } else {
+                    enabled = url.getParameter(ENABLED_KEY, true);
+                }
+                if (enabled) {
+                    // 通过protocol.refer创建invoker，返回的invoker是支持远程调用的，protocol默认为DubboProtocol
+                    invoker = new InvokerDelegate<>(protocol.refer(serviceType, url), url, providerUrl);
+                }
+            } catch (Throwable t) {
+                logger.error("Failed to refer invoker for interface:" + serviceType + ",url:(" + url + ")" + t.getMessage(), t);
+            }
+            if (invoker != null) { // Put new invoker in cache
+                newUrlInvokerMap.put(key, invoker);
+            }
+        } else {
+            // 已存在直接复用
+            newUrlInvokerMap.put(key, invoker);
+        }
+    }
+    keys.clear();
+    return newUrlInvokerMap;
+}
+----
+
+``toInvokers``方法遍历服务端url并过滤掉不可用的url，之后尝试从``urlInvokerMap``属性获取url的invoker，如果不为null说明url对应的invoker已经创建了，直接复用，否则调用``new InvokerDelegate<>(protocol.refer(serviceType, url), url, providerUrl)``语句为url创建invoker，``InvokerDelegate``类只是一层代理，没有业务逻辑，这里主要关注``protocol.refer``语句，这里的protocol是``RegistryProtocol``对象持有的``Protocol``对象，默认为``DubboProtocol``，代码：
+[java]
+----
+@Override
+public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+    // AsyncToSyncInvoker类的作用是将AsyncRpcResult转换为同步等待（如果调用方法时配置的invokeMode为sync的话）
+    return new AsyncToSyncInvoker<>(protocolBindingRefer(type, url));
+}
+
+@Override
+public <T> Invoker<T> protocolBindingRefer(Class<T> serviceType, URL url) throws RpcException {
+    optimizeSerialization(url);
+
+    // create rpc invoker.
+    // 创建一个支持远程调用的invoker，主要是通过getClients返回的ExchangeClient对象实现的远程调用
+    // DubboInvoker对象只是提供了一个线程池的功能
+    DubboInvoker<T> invoker = new DubboInvoker<T>(serviceType, url, getClients(url), invokers);
+    invokers.add(invoker);
+
+    return invoker;
+}
+----
+
+上面的代码最关键的是``protocolBindingRefer``方法中调用的``getClients``方法，该方法根据url获取``ExchangeClient``对象，通过``ExchangeClient``对象就能够想远程服务端发送请求，``getClients``方法代码：
+[java]
+----
+private ExchangeClient[] getClients(URL url) {
+    // whether to share connection
+
+    boolean useShareConnect = false;
+
+    int connections = url.getParameter(CONNECTIONS_KEY, 0);
+    List<ReferenceCountExchangeClient> shareClients = null;
+    // if not configured, connection is shared, otherwise, one connection for one service
+    // 没有设置connections参数则表示允许使用共享连接
+    if (connections == 0) {
+        useShareConnect = true;
+
+        /*
+         * The xml configuration should have a higher priority than properties.
+         */
+        String shareConnectionsStr = url.getParameter(SHARE_CONNECTIONS_KEY, (String) null);
+        // 获取共享连接数
+        connections = Integer.parseInt(StringUtils.isBlank(shareConnectionsStr) ? ConfigUtils.getProperty(SHARE_CONNECTIONS_KEY,
+                DEFAULT_SHARE_CONNECTIONS) : shareConnectionsStr);
+        // 创建共享连接
+        shareClients = getSharedClient(url, connections);
+    }
+
+    ExchangeClient[] clients = new ExchangeClient[connections];
+    for (int i = 0; i < clients.length; i++) {
+        if (useShareConnect) {
+            clients[i] = shareClients.get(i);
+
+        } else {
+            // 如果不是复用连接，则直接初始化新的连接
+            clients[i] = initClient(url);
+        }
+    }
+
+    return clients;
+}
+----
+
+``getClients``方法首先判断是否应该使用共享连接，如果是则通过``getSharedClient``方法获取共享连接。所谓共享连接，就是当前消费端所有dubbo请求共同的``ExchangeClient``对象（共享连接以服务端为粒度，即保存的时候以服务端地址为key），默认会使用共享连接，而且共享连接是懒加载的，所有获取过程也会涉及到连接的创建，这里就只需要关注``getSharedClient``方法即可，该方法代码：
+[java]
+----
+private List<ReferenceCountExchangeClient> getSharedClient(URL url, int connectNum) {
+    String key = url.getAddress();
+    // 获取当前url对应的服务端已创建的共享连接
+    // ReferenceCountExchangeClient对象用于支持引用计数，在计数为0的时候才真正关闭连接
+    List<ReferenceCountExchangeClient> clients = referenceClientMap.get(key);
+
+    // 判断是否存在被关闭的连接
+    if (checkClientCanUse(clients)) {
+        // 不存在被关闭的则为这些连接的引用计数+1，防止被close
+        batchClientRefIncr(clients);
+        // 返回已存在的连接
+        return clients;
+    }
+
+    // 通过map保存锁还挺少见的
+    locks.putIfAbsent(key, new Object());
+    synchronized (locks.get(key)) {
+        clients = referenceClientMap.get(key);
+        // dubbo check
+        if (checkClientCanUse(clients)) {
+            batchClientRefIncr(clients);
+            return clients;
+        }
+
+        // connectNum must be greater than or equal to 1
+        connectNum = Math.max(connectNum, 1);
+
+        // If the clients is empty, then the first initialization is
+        if (CollectionUtils.isEmpty(clients)) {
+            // 创建connectNum个ExchangeClient对象，每个ExchangeClient对象都被封装到了ReferenceCountExchangeClient对象
+            clients = buildReferenceCountExchangeClientList(url, connectNum);
+            referenceClientMap.put(key, clients);
+
+        } else {
+            // 检查已有的client是否存在被关闭的，存在则新建一个
+            for (int i = 0; i < clients.size(); i++) {
+                ReferenceCountExchangeClient referenceCountExchangeClient = clients.get(i);
+                // If there is a client in the list that is no longer available, create a new one to replace him.
+                if (referenceCountExchangeClient == null || referenceCountExchangeClient.isClosed()) {
+                    clients.set(i, buildReferenceCountExchangeClient(url));
+                    continue;
+                }
+
+                // 因为是复用连接，所以为该referenceCountExchangeClient增加引用次数
+                referenceCountExchangeClient.incrementAndGetCount();
+            }
+        }
+
+        /*
+         * I understand that the purpose of the remove operation here is to avoid the expired url key
+         * always occupying this memory space.
+         */
+        locks.remove(key);
+
+        return clients;
+    }
+}
+----
+
+``getSharedClient``方法首先从缓存中获取``ReferenceCountExchangeClient``对象，该对象是``ExchangeClient``对象的一层封装，通过引用计数实现了复用。如果缓存中不存在连接，则通过``buildReferenceCountExchangeClientList``方法创建连接：
+[java]
+----
+private List<ReferenceCountExchangeClient> buildReferenceCountExchangeClientList(URL url, int connectNum) {
+    List<ReferenceCountExchangeClient> clients = new ArrayList<>();
+
+    for (int i = 0; i < connectNum; i++) {
+        clients.add(buildReferenceCountExchangeClient(url));
+    }
+
+    return clients;
+}
+
+private ReferenceCountExchangeClient buildReferenceCountExchangeClient(URL url) {
+    ExchangeClient exchangeClient = initClient(url);
+
+    // ReferenceCountExchangeClient通过引用计数实现连接复用，在引用为0的时候才真正关闭exchangeClient
+    return new ReferenceCountExchangeClient(exchangeClient);
+}
+
+private ExchangeClient initClient(URL url) {
+
+    // client type setting.
+    // 获取消费端网络层实现的类型，默认为netty
+    String str = url.getParameter(CLIENT_KEY, url.getParameter(SERVER_KEY, DEFAULT_REMOTING_CLIENT));
+
+    // 添加编解码器名称
+    url = url.addParameter(CODEC_KEY, DubboCodec.NAME);
+    // enable heartbeat by default
+    // 添加心跳间隔
+    url = url.addParameterIfAbsent(HEARTBEAT_KEY, String.valueOf(DEFAULT_HEARTBEAT));
+
+    // BIO is not allowed since it has severe performance issue.
+    if (str != null && str.length() > 0 && !ExtensionLoader.getExtensionLoader(Transporter.class).hasExtension(str)) {
+        throw new RpcException("Unsupported client type: " + str + "," +
+                " supported client type is " + StringUtils.join(ExtensionLoader.getExtensionLoader(Transporter.class).getSupportedExtensions(), " "));
+    }
+
+    ExchangeClient client;
+    try {
+        // connection should be lazy
+        // 如果配置了lazy，则实际需要时才创建正在的连接
+        if (url.getParameter(LAZY_CONNECT_KEY, false)) {
+            client = new LazyConnectExchangeClient(url, requestHandler);
+
+        } else {
+            client = Exchangers.connect(url, requestHandler);
+        }
+
+    } catch (RemotingException e) {
+        throw new RpcException("Fail to create remoting client for service(" + url + "): " + e.getMessage(), e);
+    }
+
+    return client;
+}
+----
+
+``initClient``方法调用``Exchangers.connect(url, requestHandler)``语句创建``ExchangeClient``对象，``Exchangers.connect``方法代码：
+[java]
+----
+public static ExchangeClient connect(URL url, ExchangeHandler handler) throws RemotingException {
+    if (url == null) {
+        throw new IllegalArgumentException("url == null");
+    }
+    if (handler == null) {
+        throw new IllegalArgumentException("handler == null");
+    }
+    url = url.addParameterIfAbsent(Constants.CODEC_KEY, "exchange");
+    // getExchanger方法默认返回HeaderExchanger对象
+    return getExchanger(url).connect(url, handler);
+}
+
+// 上面用到的HeaderExchanger类
+public class HeaderExchanger implements Exchanger {
+
+    public static final String NAME = "header";
+
+    @Override
+    public ExchangeClient connect(URL url, ExchangeHandler handler) throws RemotingException {
+        // HeaderExchangeClient类会创建尝试重连和发送心跳的定时任务
+        return new HeaderExchangeClient(Transporters.connect(url, new DecodeHandler(new HeaderExchangeHandler(handler))), true);
+    }
+
+    @Override
+    public ExchangeServer bind(URL url, ExchangeHandler handler) throws RemotingException {
+        // HeaderExchangeServer类主要功能是实现了空闲连接的检测，其读取channel的读取和写入操作的上次执行时间，在超过一定时候后关闭
+        // channel，HeaderExchangeServer的其他方法的实现都是委托给传入构造函数的RemotingServer对象实现的
+        return new HeaderExchangeServer(Transporters.bind(url, new DecodeHandler(new HeaderExchangeHandler(handler))));
+    }
+
+}
+----
+
+``HeaderExchanger``类在{服务端启动过程}和{服务端如何处理调用请求}中提到了，服务端启动时会调用其``bind``方法，现在消费端调用的是``connect``方法，和``bind``方法不同的只是返回的是``HeaderExchangeClient``对象，所以这里对其他对象不再分析，而``HeaderExchangeClient``对象的作用只是创建重连和心跳的定时任务，请求发送的逻辑是交给传入其构造函数的``Client``对象，也就是上面``Transporters.connect(url, new DecodeHandler(new HeaderExchangeHandler(handler)))``语句返回的对象处理，对于该语句的实现，在{服务端如何处理调用请求}已经分析过了，这里不再赘述。
+
+在创建完``ExchangeClient``对象后，回到``DubboProtocol``的``protocolBindingRefer``方法，该方法在调用``getClients``方法获取到``ExchangeClient``对象后创建``DubboInvoker``对象返回，这里看看``DubboInvoker``类的``doInvoke``方法的实现：
+[java]
+----
+@Override
+protected Result doInvoke(final Invocation invocation) throws Throwable {
+    RpcInvocation inv = (RpcInvocation) invocation;
+    final String methodName = RpcUtils.getMethodName(invocation);
+    inv.setAttachment(PATH_KEY, getUrl().getPath());
+    inv.setAttachment(VERSION_KEY, version);
+
+    ExchangeClient currentClient;
+    if (clients.length == 1) {
+        currentClient = clients[0];
+    } else {
+        // 多个连接则轮训使用
+        currentClient = clients[index.getAndIncrement() % clients.length];
+    }
+    try {
+        // 是否需要服务端作出响应
+        boolean isOneway = RpcUtils.isOneway(getUrl(), invocation);
+        int timeout = calculateTimeout(invocation, methodName);
+        if (isOneway) {
+            boolean isSent = getUrl().getMethodParameter(methodName, Constants.SENT_KEY, false);
+            // 如果是单向请求，直接send即可
+            currentClient.send(inv, isSent);
+            // 直接返回一个结果为null的AsyncRpcResult对象
+            return AsyncRpcResult.newDefaultAsyncResult(invocation);
+        } else {
+            // 创建线程池
+            ExecutorService executor = getCallbackExecutor(getUrl(), inv);
+            CompletableFuture<AppResponse> appResponseFuture =
+                    currentClient.request(inv, timeout, executor).thenApply(obj -> (AppResponse) obj);
+            // save for 2.6.x compatibility, for example, TraceFilter in Zipkin uses com.alibaba.xxx.FutureAdapter
+            FutureContext.getContext().setCompatibleFuture(appResponseFuture);
+            AsyncRpcResult result = new AsyncRpcResult(appResponseFuture, inv);
+            result.setExecutor(executor);
+            return result;
+        }
+    } catch (TimeoutException e) {
+        throw new RpcException(RpcException.TIMEOUT_EXCEPTION, "Invoke remote method timeout. method: " + invocation.getMethodName() + ", provider: " + getUrl() + ", cause: " + e.getMessage(), e);
+    } catch (RemotingException e) {
+        throw new RpcException(RpcException.NETWORK_EXCEPTION, "Failed to invoke remote method: " + invocation.getMethodName() + ", provider: " + getUrl() + ", cause: " + e.getMessage(), e);
+    }
+}
+----
+
+``DubboInvoker``类作为invoker，其``doInvoke``方法会在消费端调用服务端方法时被调用，``doInvoke``方法通过调用``ExchangeClient``对象的``request``方法发送服务端方法调用请求，并返回``AsyncRpcResult``对象，这里的``ExchangeClient``对象就是上面说到的``HeaderExchangeClient``对象，``HeaderExchangeClient``对象最终会通过netty发送请求，其``request``方法的实现和服务端接收类似，可以看``NettyClient``的实现和{服务端如何处理调用请求}，这里不再赘述。
+
+在获取到``Invoker``对象后，回到最开始的调用，即``ReferenceConfig``类的``createProxy``方法，其获取到``Invoker``对象后执行如下语句返回：
+[java]
+----
+// 创建代理，默认实现为JavassistProxyFactory
+return (T) PROXY_FACTORY.getProxy(invoker, ProtocolUtils.isGeneric(generic));
+----
+
+这里的``PROXY_FACTORY``的默认实现和{服务端如何处理调用请求}中一样，都是``JavassistProxyFactory``类，用于返回一个代理对象，``JavassistProxyFactory``类``getProxy``方法代码：
+[java]
+----
+@Override
+@SuppressWarnings("unchecked")
+public <T> T getProxy(Invoker<T> invoker, Class<?>[] interfaces) {
+    /*
+     可以通过在javassist的ClassGenerator类的toClass方法返回前，调用mCtc.writeFile("/Users/donghaifeng/tmp")获取动态生成的
+     类定义，生成的类例子：
+    // Source code recreated from a .class file by IntelliJ IDEA
+    // (powered by Fernflower decompiler)
+    //
+
+    package org.apache.dubbo.common.bytecode;
+
+    import com.alibaba.dubbo.rpc.service.EchoService;
+    import com.apache.dubbo.demo.api.GreetingService;
+    import com.apache.dubbo.demo.api.PoJo;
+    import com.apache.dubbo.demo.api.Result;
+    import java.lang.reflect.InvocationHandler;
+    import java.lang.reflect.Method;
+    import org.apache.dubbo.common.bytecode.ClassGenerator.DC;
+    import org.apache.dubbo.rpc.service.Destroyable;
+
+    public class proxy0 implements DC, GreetingService, Destroyable, EchoService {
+        public static Method[] methods;
+        private InvocationHandler handler;
+
+        // testGeneric和sayHello方法都是GreetingService接口中的
+        public Result testGeneric(PoJo var1) {
+            Object[] var2 = new Object[]{var1};
+            Object var3 = this.handler.invoke(this, methods[0], var2);
+            return (Result)var3;
+        }
+
+        public String sayHello(String var1) {
+            Object[] var2 = new Object[]{var1};
+            Object var3 = this.handler.invoke(this, methods[1], var2);
+            return (String)var3;
+        }
+
+        public Object $echo(Object var1) {
+            Object[] var2 = new Object[]{var1};
+            Object var3 = this.handler.invoke(this, methods[2], var2);
+            return (Object)var3;
+        }
+
+        public void $destroy() {
+            Object[] var1 = new Object[0];
+            this.handler.invoke(this, methods[3], var1);
+        }
+
+        public proxy0() {
+        }
+
+        public proxy0(InvocationHandler var1) {
+            this.handler = var1;
+        }
+    }
+     */
+    final Proxy proxy = Proxy.getProxy(interfaces);
+    // 可以看到上面生成的类构造函数需要传入InvokerInvocationHandler对象
+    return (T) proxy.newInstance(new InvokerInvocationHandler(invoker));
+}
+----
+
+上面的代码通过javassist创建一个动态类，通过反射直接调用``InvokerInvocationHandler``对象中的方法，``InvokerInvocationHandler``实现如下：
+[java]
+----
+public class InvokerInvocationHandler implements InvocationHandler {
+    private static final Logger logger = LoggerFactory.getLogger(InvokerInvocationHandler.class);
+    private final Invoker<?> invoker;
+    private ConsumerModel consumerModel;
+
+    public InvokerInvocationHandler(Invoker<?> handler) {
+        this.invoker = handler;
+        String serviceKey = invoker.getUrl().getServiceKey();
+        if (serviceKey != null) {
+            this.consumerModel = ApplicationModel.getConsumerModel(serviceKey);
+        }
+    }
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        if (method.getDeclaringClass() == Object.class) {
+            return method.invoke(invoker, args);
+        }
+        String methodName = method.getName();
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        if (parameterTypes.length == 0) {
+            if ("toString".equals(methodName)) {
+                return invoker.toString();
+            } else if ("$destroy".equals(methodName)) {
+                invoker.destroy();
+                return null;
+            } else if ("hashCode".equals(methodName)) {
+                return invoker.hashCode();
+            }
+        } else if (parameterTypes.length == 1 && "equals".equals(methodName)) {
+            return invoker.equals(args[0]);
+        }
+        // 构建Invocation对象
+        RpcInvocation rpcInvocation = new RpcInvocation(method, invoker.getInterface().getName(), args);
+        String serviceKey = invoker.getUrl().getServiceKey();
+        rpcInvocation.setTargetServiceUniqueName(serviceKey);
+      
+        if (consumerModel != null) {
+            rpcInvocation.put(Constants.CONSUMER_MODEL, consumerModel);
+            rpcInvocation.put(Constants.METHOD_MODEL, consumerModel.getMethodModel(method));
+        }
+
+        // 调用并获取结果，如果发生异常则会被抛出
+        return invoker.invoke(rpcInvocation).recreate();
+    }
+}
+----
+
+以上是消费端启动过程，通过上面的分析，也能够了解消费端是如何发送请求和获取结果的。
