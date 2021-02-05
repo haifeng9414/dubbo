@@ -1,9 +1,10 @@
 :服务端启动过程: link:服务端启动过程.adoc[服务端启动过程]
 :服务端如何处理调用请求: link:服务端如何处理调用请求.adoc[服务端如何处理调用请求]
+:消费端启动过程: link:dubbo-consumer/消费端启动过程.adoc[消费端启动过程]
 
 = 如何实现本地服务调用
 
-前提：{服务端如何处理调用请求}、{服务端启动过程}
+前提：{服务端启动过程}、{服务端如何处理调用请求}、{消费端启动过程}
 
 从笔记{服务端启动过程}可知，服务端启动时默认会将自己export到本地以支持本地方法调用，对应的代码在``ServiceConfig``类的``doExportUrlsFor1Protocol``方法：
 [java]
@@ -49,4 +50,68 @@ public <T> Exporter<T> export(Invoker<T> invoker) throws RpcException {
 }
 ----
 
-``InjvmProtocol``类的``export``方法只是简单的返回一个``InjvmExporter``对象，该对象主要作用在于将``invoker``对象维护在``exporterMap``中，没有其他的逻辑，作为对比，可以看``RegistryProtocol``的``export``方法的实现，``RegistryProtocol``的``export``方法会将传入的invoker的url注册到注册中心（默认为zk），之后调用``DubboProtocol``的``export``方法启动netty监听调用请求，以此支持远程方法调用。
+``InjvmProtocol``类的``export``方法只是简单的返回一个``InjvmExporter``对象，该对象主要作用在于将``invoker``对象维护在``exporterMap``中，没有其他的逻辑，作为对比，可以看``RegistryProtocol``的``export``方法的实现，``RegistryProtocol``的``export``方法会将传入的invoker的url注册到注册中心（默认为zk），之后调用``DubboProtocol``的``export``方法启动netty监听调用请求，以此支持远程方法调用。对于远程调用，简单的返回``InjvmExporter``对象，通过``InjvmExporter``对象获取到的``Invoker``对象是``PROXY_FACTORY.getInvoker(ref, (Class) interfaceClass, local)``语句创建的，该语句的作用在笔记{服务端如何处理调用请求}和{消费端启动过程}中都分析了，可以理解为就是服务端实现类的代理，通过该代理就能直接调用服务端的本地实现，本地服务调用时消费端只需要获取到该代理即可完成本地调用。下面看看消费端是如何获取到该代理的。
+
+从笔记{消费端启动过程}可知，``ReferenceConfig``类的``createProxy``方法会判断是否为本地调用：
+[java]
+----
+@SuppressWarnings({"unchecked", "rawtypes", "deprecation"})
+private T createProxy(Map<String, String> map) {
+    if (shouldJvmRefer(map)) {
+        // 创建本地调用的url，该url的protocol为injvm，和服务端的exportLocal方法一致
+        URL url = new URL(LOCAL_PROTOCOL, LOCALHOST_VALUE, 0, interfaceClass.getName()).addParameters(map);
+        // 获取本地服务的引用，默认实现为InjvmProtocol，InjvmProtocol通过其持有的exporterMap获取服务端执行本地export时添加的
+        // invoker，通过该invoker就可以调用本地服务端实现类
+        invoker = REF_PROTOCOL.refer(interfaceClass, url);
+        if (logger.isInfoEnabled()) {
+            logger.info("Using injvm service " + interfaceClass.getName());
+        }
+    }
+
+    ...
+}
+----
+
+如果是，则通过``REF_PROTOCOL.refer(interfaceClass, url)``获取``Invoker``对象。因为将url的protcol修改为了injvm，所以这里的``REF_PROTOCOL``实现为``InjvmProtocol``，其``refer``方法实现：
+[java]
+----
+@Override
+public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+    // AsyncToSyncInvoker类的作用是将AsyncRpcResult转换为同步等待（如果调用方法时配置的invokeMode为sync的话）
+    return new AsyncToSyncInvoker<>(protocolBindingRefer(type, url));
+}
+
+@Override
+public <T> Invoker<T> protocolBindingRefer(Class<T> serviceType, URL url) throws RpcException {
+    return new InjvmInvoker<T>(serviceType, url, url.getServiceKey(), exporterMap);
+}
+----
+
+``InjvmProtocol``直接返回``InjvmInvoker``对象，该对象的``doInvoke``实现如下：
+[java]
+----
+@Override
+public Result doInvoke(Invocation invocation) throws Throwable {
+    Exporter<?> exporter = InjvmProtocol.getExporter(exporterMap, getUrl());
+    if (exporter == null) {
+        throw new RpcException("Service [" + key + "] not found.");
+    }
+    RpcContext.getContext().setRemoteAddress(LOCALHOST_VALUE, 0);
+    return exporter.getInvoker().invoke(invocation);
+}
+----
+
+上面的方法从``exporterMap``获取``Exporter``，并调用``getInvoker``获取``Invoker``，这里的``exporterMap``和最开始分析的``InjvmExporter``中的``exporterMap``实际上是同一个，因为``InjvmExporter``和``InjvmInvoker``对象是由同一个``InjvmProtocol``对象创建的（Dubbo SPI默认是单例的）。``InjvmExporter``类的构造函数会将传入的``Invoker``对象保存到``exporterMap``中：
+[java]
+----
+InjvmExporter(Invoker<T> invoker, String key, Map<String, Exporter<?>> exporterMap) {
+    super(invoker);
+    this.key = key;
+    this.exporterMap = exporterMap;
+    exporterMap.put(key, this);
+}
+----
+
+保存的``Invoker``对象就是上面说到的通过``PROXY_FACTORY.getInvoker(ref, (Class) interfaceClass, local)``语句创建的代理，这样``InjvmInvoker``对象就能够通过``exporterMap``获取到该代理了。
+
+以上是本地方法调用的实现。

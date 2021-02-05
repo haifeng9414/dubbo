@@ -1,3 +1,336 @@
 :消费端启动过程: link:dubbo-provider/消费端启动过程.adoc[消费端启动过程]
 
 = 如何实现负载均衡
+
+前提：{消费端启动过程}
+
+负载均衡是通过创建一个支持负载均衡的invoker实现的，关键代码在``RegistryProtocol``的``doRefer``方法：
+[java]
+----
+private <T> Invoker<T> doRefer(Cluster cluster, Registry registry, Class<T> type, URL url) {
+    // RegistryDirectory对象保存了消费者的配置和url等信息
+    RegistryDirectory<T> directory = new RegistryDirectory<T>(type, url);
+    directory.setRegistry(registry);
+    directory.setProtocol(protocol);
+    // all attributes of REFER_KEY
+    Map<String, String> parameters = new HashMap<String, String>(directory.getConsumerUrl().getParameters());
+    // 创建订阅url，如：
+    // consumer://172.19.92.226/com.apache.dubbo.demo.api.GreetingService?application=first-dubbo-consumer&dubbo=2.0.2&group=dubbo&interface=com.apache.dubbo.demo.api.GreetingService&methods=sayHello,testGeneric&pid=65594&revision=1.0.0&side=consumer&sticky=false&timeout=5000&timestamp=1612345441612&version=1.0.0
+    URL subscribeUrl = new URL(CONSUMER_PROTOCOL, parameters.remove(REGISTER_IP_KEY), 0, type.getName(), parameters);
+    // 判断消费端是否需要注册到注册中心，默认为true
+    if (directory.isShouldRegister()) {
+        directory.setRegisteredConsumerUrl(subscribeUrl);
+        // 类似服务端注册到注册中心的过程，这里将消费者的url注册到注册中心，如zk会存在如下节点：
+        /*
+        get /dubbo/com.apache.dubbo.demo.api.GreetingService/consumers/consumer%3A%2F%2F172.19.92.226%2Fcom.apache.dubbo.demo.api.GreetingService%3Fapplication%3Dfirst-dubbo-consumer%26category%3Dconsumers%26check%3Dfalse%26dubbo%3D2.0.2%26group%3Ddubbo%26interface%3Dcom.apache.dubbo.demo.api.GreetingService%26methods%3DsayHello%2CtestGeneric%26pid%3D65875%26revision%3D1.0.0%26side%3Dconsumer%26sticky%3Dfalse%26timeout%3D5000%26timestamp%3D1612345601845%26version%3D1.0.0
+        节点值：消费端的ip
+         */
+        registry.register(directory.getRegisteredConsumerUrl());
+    }
+    // 初始化RouterChain
+    directory.buildRouterChain(subscribeUrl);
+    // toSubscribeUrl方法为传入的url加上category参数，参数值为providers,configurators,routers，即需要订阅providers,configurators,routers
+    // 这3个配置的变化
+    directory.subscribe(toSubscribeUrl(subscribeUrl));
+    // cluster默认实现为FailoverCluster，该cluster直接返回FailoverClusterInvoker对象
+    Invoker<T> invoker = cluster.join(directory);
+    List<RegistryProtocolListener> listeners = findRegistryProtocolListeners(url);
+    if (CollectionUtils.isEmpty(listeners)) {
+        return invoker;
+    }
+
+    // RegistryProtocolListener不为空则遍历调用onRefer方法
+    RegistryInvokerWrapper<T> registryInvokerWrapper = new RegistryInvokerWrapper<>(directory, cluster, invoker);
+    for (RegistryProtocolListener listener : listeners) {
+        listener.onRefer(this, registryInvokerWrapper);
+    }
+    return registryInvokerWrapper;
+}
+----
+
+从{消费端启动过程}可知，上面的代码中的``directory``对象持有服务端的invoker列表，``doRefer``方法在返回``Invoker``对象之前，调用``cluster.join(directory)``将``directory``对象转换为``Invoker``对象，也就是将服务端的invoker列表转换为一个``Invoker``对象，负载均衡的实现就在这转换过程中，下面看看这个转换过程。``Cluster``的默认实现是``FailoverCluster``类，其``join``方法实现：
+[java]
+----
+@Override
+public <T> Invoker<T> join(Directory<T> directory) throws RpcException {
+    // buildClusterInterceptors方法对InterceptorInvokerNode提供了支持，为doJoin(directory)方法返回的AbstractClusterInvoker
+    // 对象创建多层wrapper
+    // AbstractCluster默认实现为FailoverCluster
+    return buildClusterInterceptors(doJoin(directory), directory.getUrl().getParameter(REFERENCE_INTERCEPTOR_KEY));
+}
+
+@Override
+public <T> AbstractClusterInvoker<T> doJoin(Directory<T> directory) throws RpcException {
+    return new FailoverClusterInvoker<>(directory);
+}
+----
+
+``doJoin``方法返回``FailoverClusterInvoker``对象，``FailoverClusterInvoker``实现了重试功能，其父类``AbstractClusterInvoker``封装了根据负载均衡策略选择invoker的过程，``AbstractClusterInvoker``的``invoker``方法：
+[java]
+----
+@Override
+public Result invoke(final Invocation invocation) throws RpcException {
+    checkWhetherDestroyed();
+
+    // binding attachments into invocation.
+    Map<String, Object> contextAttachments = RpcContext.getContext().getObjectAttachments();
+    if (contextAttachments != null && contextAttachments.size() != 0) {
+        ((RpcInvocation) invocation).addObjectAttachments(contextAttachments);
+    }
+
+    // 从Directory获取所有可用的Invoker，默认实现是RegistryDirectory
+    List<Invoker<T>> invokers = list(invocation);
+    // 获取负载均衡器，默认为RandomLoadBalance
+    LoadBalance loadbalance = initLoadBalance(invokers, invocation);
+    // 向invocation的attachment中添加一个id属性，表示当前invocation的id，id是通过RpcUtils类的AtomicLong属性获取的
+    RpcUtils.attachInvocationIdIfAsync(getUrl(), invocation);
+    return doInvoke(invocation, invokers, loadbalance);
+}
+
+protected List<Invoker<T>> list(Invocation invocation) throws RpcException {
+    return directory.list(invocation);
+}
+----
+
+``list(invocation)``语句从``Directory``对象获取invoker列表，默认实现为``RegistryDirectory``，从{消费端启动过程}可知，``RegistryDirectory``对象持有从注册中心获取的服务端invoker列表，``RegistryDirectory``类的``doList``方法用``RouterChain``对象对其只有的invoker列表进行过滤并返回：
+[java]
+----
+@Override
+public List<Invoker<T>> doList(Invocation invocation) {
+    if (forbidden) {
+        // 1. No service provider 2. Service providers are disabled
+        throw new RpcException(RpcException.FORBIDDEN_EXCEPTION, "No provider available from registry " +
+                getUrl().getAddress() + " for service " + getConsumerUrl().getServiceKey() + " on consumer " +
+                NetUtils.getLocalHost() + " use dubbo version " + Version.getVersion() +
+                ", please check status of providers(disabled, not registered or in blacklist).");
+    }
+
+    if (multiGroup) {
+        return this.invokers == null ? Collections.emptyList() : this.invokers;
+    }
+
+    List<Invoker<T>> invokers = null;
+    try {
+        // Get invokers from cache, only runtime routers will be executed.
+        // 通过route过滤invoker，如根据condition、tag过滤invoker，具体的可以看：
+        // https://dubbo.apache.org/zh/docs/v2.7/user/examples/routing-rule/
+        invokers = routerChain.route(getConsumerUrl(), invocation);
+    } catch (Throwable t) {
+        logger.error("Failed to execute router: " + getUrl() + ", cause: " + t.getMessage(), t);
+    }
+
+    return invokers == null ? Collections.emptyList() : invokers;
+}
+----
+
+``RouterChain``对象过滤invoker的过程负载均衡的重点，这里不做分析。获取到invoker列表后，``AbstractClusterInvoker``的``invoker``方法创建负载均衡器，默认实现为``RandomLoadBalance``，之后调用由子类实现的``doInvoke``方法：
+[java]
+----
+protected LoadBalance initLoadBalance(List<Invoker<T>> invokers, Invocation invocation) {
+    if (CollectionUtils.isNotEmpty(invokers)) {
+        return ExtensionLoader.getExtensionLoader(LoadBalance.class).getExtension(invokers.get(0).getUrl()
+                .getMethodParameter(RpcUtils.getMethodName(invocation), LOADBALANCE_KEY, DEFAULT_LOADBALANCE));
+    } else {
+        return ExtensionLoader.getExtensionLoader(LoadBalance.class).getExtension(DEFAULT_LOADBALANCE);
+    }
+}
+----
+
+下面再看看``AbstractClusterInvoker``的子类``FailoverCluster``的``doInvoke``方法的实现：
+[java]
+----
+@Override
+@SuppressWarnings({"unchecked", "rawtypes"})
+public Result doInvoke(Invocation invocation, final List<Invoker<T>> invokers, LoadBalance loadbalance) throws RpcException {
+    List<Invoker<T>> copyInvokers = invokers;
+    // 判断invokers是否为空
+    checkInvokers(copyInvokers, invocation);
+    String methodName = RpcUtils.getMethodName(invocation);
+    // 获取当前需要调用的方法的重试次数
+    int len = getUrl().getMethodParameter(methodName, RETRIES_KEY, DEFAULT_RETRIES) + 1;
+    if (len <= 0) {
+        len = 1;
+    }
+    // retry loop.
+    RpcException le = null; // last exception.
+    List<Invoker<T>> invoked = new ArrayList<Invoker<T>>(copyInvokers.size()); // invoked invokers.
+    Set<String> providers = new HashSet<String>(len);
+    for (int i = 0; i < len; i++) {
+        //Reselect before retry to avoid a change of candidate `invokers`.
+        //NOTE: if `invokers` changed, then `invoked` also lose accuracy.
+        // 如果是重试的情况下，重新获取invoker列表。避免重试的时候选择了无效的invoker
+        if (i > 0) {
+            checkWhetherDestroyed();
+            copyInvokers = list(invocation);
+            // check again
+            checkInvokers(copyInvokers, invocation);
+        }
+        // 通过负载均衡器选择一个invoker
+        Invoker<T> invoker = select(loadbalance, invocation, copyInvokers, invoked);
+        // 添加到已经使用过的invoker中，避免重试期间再次使用
+        invoked.add(invoker);
+        RpcContext.getContext().setInvokers((List) invoked);
+        try {
+            // 执行远程调用
+            Result result = invoker.invoke(invocation);
+            if (le != null && logger.isWarnEnabled()) {
+                logger.warn("Although retry the method " + methodName
+                        + " in the service " + getInterface().getName()
+                        + " was successful by the provider " + invoker.getUrl().getAddress()
+                        + ", but there have been failed providers " + providers
+                        + " (" + providers.size() + "/" + copyInvokers.size()
+                        + ") from the registry " + directory.getUrl().getAddress()
+                        + " on the consumer " + NetUtils.getLocalHost()
+                        + " using the dubbo version " + Version.getVersion() + ". Last error is: "
+                        + le.getMessage(), le);
+            }
+            return result;
+        } catch (RpcException e) {
+            if (e.isBiz()) { // biz exception.
+                throw e;
+            }
+            le = e;
+        } catch (Throwable e) {
+            le = new RpcException(e.getMessage(), e);
+        } finally {
+            providers.add(invoker.getUrl().getAddress());
+        }
+    }
+    throw new RpcException(le.getCode(), "Failed to invoke the method "
+            + methodName + " in the service " + getInterface().getName()
+            + ". Tried " + len + " times of the providers " + providers
+            + " (" + providers.size() + "/" + copyInvokers.size()
+            + ") from the registry " + directory.getUrl().getAddress()
+            + " on the consumer " + NetUtils.getLocalHost() + " using the dubbo version "
+            + Version.getVersion() + ". Last error is: "
+            + le.getMessage(), le.getCause() != null ? le.getCause() : le);
+}
+----
+
+上面的代码并不复杂，首先获取重试次数，之后开始循环，每次循环都调用``select``方法获取一个``Invoker``对象，``select``方法是现在其父类``AbstractClusterInvoker``，代码：
+[java]
+----
+protected Invoker<T> select(LoadBalance loadbalance, Invocation invocation,
+                            List<Invoker<T>> invokers, List<Invoker<T>> selected) throws RpcException {
+
+    if (CollectionUtils.isEmpty(invokers)) {
+        return null;
+    }
+    String methodName = invocation == null ? StringUtils.EMPTY_STRING : invocation.getMethodName();
+
+    boolean sticky = invokers.get(0).getUrl()
+            .getMethodParameter(methodName, CLUSTER_STICKY_KEY, DEFAULT_CLUSTER_STICKY);
+
+    //ignore overloaded method
+    if (stickyInvoker != null && !invokers.contains(stickyInvoker)) {
+        stickyInvoker = null;
+    }
+    //ignore concurrency problem
+    // 如果要求sticky，则使用stickyInvoker这个已经用过的invoker，但是使用前检查其有效性
+    // selected保存的是这次调用的重试过程中使用过的invoker，如果selected不为空且含有stickyInvoker，说明stickyInvoker已经是不可
+    // 用的了
+    if (sticky && stickyInvoker != null && (selected == null || !selected.contains(stickyInvoker))) {
+        if (availablecheck && stickyInvoker.isAvailable()) {
+            return stickyInvoker;
+        }
+    }
+
+    Invoker<T> invoker = doSelect(loadbalance, invocation, invokers, selected);
+
+    if (sticky) {
+        stickyInvoker = invoker;
+    }
+    return invoker;
+}
+----
+
+上面的首先判断是否应该使用固定的invoker，如果不是或者``stickyInvoker``不可用，则调用``doSelect``方法选择一个invoker，代码：
+[java]
+----
+private Invoker<T> doSelect(LoadBalance loadbalance, Invocation invocation,
+                            List<Invoker<T>> invokers, List<Invoker<T>> selected) throws RpcException {
+
+    if (CollectionUtils.isEmpty(invokers)) {
+        return null;
+    }
+    if (invokers.size() == 1) {
+        return invokers.get(0);
+    }
+    // 通过负载均衡器选择一个invoker，默认实现为RandomLoadBalance
+    Invoker<T> invoker = loadbalance.select(invokers, getUrl(), invocation);
+
+    //If the `invoker` is in the  `selected` or invoker is unavailable && availablecheck is true, reselect.
+    // 如果该invoker在重试期间使用过，说明是不可用的，或invoker已经是不可用的，则重新选择
+    if ((selected != null && selected.contains(invoker))
+            || (!invoker.isAvailable() && getUrl() != null && availablecheck)) {
+        try {
+            Invoker<T> rInvoker = reselect(loadbalance, invocation, invokers, selected, availablecheck);
+            if (rInvoker != null) {
+                invoker = rInvoker;
+            } else {
+                //Check the index of current selected invoker, if it's not the last one, choose the one at index+1.
+                int index = invokers.indexOf(invoker);
+                try {
+                    //Avoid collision
+                    // 重新选择失败则直接返回下一个invoker
+                    invoker = invokers.get((index + 1) % invokers.size());
+                } catch (Exception e) {
+                    logger.warn(e.getMessage() + " may because invokers list dynamic change, ignore.", e);
+                }
+            }
+        } catch (Throwable t) {
+            logger.error("cluster reselect fail reason is :" + t.getMessage() + " if can not solve, you can set cluster.availablecheck=false in url", t);
+        }
+    }
+    return invoker;
+}
+----
+
+``doSelect``方法通过负载均衡器选择一个invoker，同时尽量避免选择此次调用已经选择过的invoker，下面看看``RandomLoadBalance``的的实现，其``doSelect``方法：
+[java]
+----
+@Override
+protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation invocation) {
+    // Number of invokers
+    int length = invokers.size();
+    // Every invoker has the same weight?
+    boolean sameWeight = true;
+    // the weight of every invokers
+    int[] weights = new int[length];
+    // the first invoker's weight
+    int firstWeight = getWeight(invokers.get(0), invocation);
+    weights[0] = firstWeight;
+    // The sum of weights
+    int totalWeight = firstWeight;
+    for (int i = 1; i < length; i++) {
+        int weight = getWeight(invokers.get(i), invocation);
+        // save for later use
+        weights[i] = weight;
+        // Sum
+        totalWeight += weight;
+        if (sameWeight && weight != firstWeight) {
+            sameWeight = false;
+        }
+    }
+    // 如果存在权重不相等的invoker
+    if (totalWeight > 0 && !sameWeight) {
+        // If (not every invoker has the same weight & at least one invoker's weight>0), select randomly based on totalWeight.
+        // 根据所有invoker权重的合取随机数，返回命中的invoker
+        int offset = ThreadLocalRandom.current().nextInt(totalWeight);
+        // Return a invoker based on the random value.
+        for (int i = 0; i < length; i++) {
+            offset -= weights[i];
+            if (offset < 0) {
+                return invokers.get(i);
+            }
+        }
+    }
+    // If all invokers have the same weight value or totalWeight=0, return evenly.
+    // 所有invoker的权重都想等就返回随机的一个
+    return invokers.get(ThreadLocalRandom.current().nextInt(length));
+}
+----
+
+``doSelect``方法不仅是随机选择，还对权重提供了支持，代码逻辑很简单，直接看注释即可。
+
+以上是负载均衡的实现。

@@ -354,7 +354,7 @@ public void subscribe(URL url) {
 }
 ----
 
-上面的配置使得``RegistryDirectory``对象作为监听器监听服务端在注册中心的``providers,configurators,routers``节点的配置变化，当配置发生变化时，``RegistryDirectory``对象``notify``方法会被调用，方法参数是注册中心中最新的providers或configurators或routers节点下的url列表，每个列表就代表一个服务端配置，该方法代码：
+上面的配置使得``RegistryDirectory``对象作为监听器监听服务端在注册中心的``providers,configurators,routers``节点的配置变化，当配置发生变化时，``RegistryDirectory``对象``notify``方法会被调用，方法参数是注册中心中最新的providers或configurators或routers节点下的url列表，每个列表就代表一个服务端配置，当消费端第一次订阅的时候，``notify``方法就会被调用，该方法代码：
 [java]
 ----
 @Override
@@ -472,7 +472,7 @@ private void refreshInvoker(List<URL> invokerUrls) {
 }
 ----
 
-``refreshOverrideAndInvoker`方法通过``toInvokers``方法将url转换为invoker，该方法代码如下：
+``refreshOverrideAndInvoker`方法通过``toInvokers``方法将url转换为invoker，通过这种方法，消费端向注册中心发起订阅请求后，就能够实时的获取到服务端的invoker列表了，现在最关键的是url转换invoker的过程，``toInvokers``方法方法代码如下：
 [java]
 ----
 private Map<String, Invoker<T>> toInvokers(List<URL> urls) {
