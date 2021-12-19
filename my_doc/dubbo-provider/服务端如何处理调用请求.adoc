@@ -1,5 +1,5 @@
 :服务端启动过程: link:服务端启动过程.adoc[服务端启动过程]
-:编解码过程: link:dubbo-common/编解码过程.adoc[编解码过程]
+:编解码过程: link:../dubbo-common/编解码过程.adoc[编解码过程]
 
 = 服务端如何处理调用请求
 

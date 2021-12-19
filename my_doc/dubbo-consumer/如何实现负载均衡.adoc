@@ -1,4 +1,4 @@
-:消费端启动过程: link:dubbo-provider/消费端启动过程.adoc[消费端启动过程]
+:消费端启动过程: link:../dubbo-provider/消费端启动过程.adoc[消费端启动过程]
 
 = 如何实现负载均衡
 

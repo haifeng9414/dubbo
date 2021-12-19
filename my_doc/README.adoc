@@ -4,7 +4,7 @@ image::resources/dubbo-framework.jpg[]
 
 == dubbo-common
 - link:dubbo-common/Dubbo中的SPI机制.adoc[Dubbo中的SPI机制]
-- link:dubbo-provider/编解码过程.adoc[编解码过程]
+- link:dubbo-common/编解码过程.adoc[编解码过程]
 
 == dubbo-registry
 - link:dubbo-registry/注册中心实现.adoc[注册中心实现]

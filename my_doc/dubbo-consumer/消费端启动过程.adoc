@@ -1,6 +1,6 @@
-:服务端启动过程: link:dubbo-provider/服务端启动过程.adoc[服务端启动过程]
-:如何实现本地服务调用: link:dubbo-provider/如何实现本地服务调用.adoc[如何实现本地服务调用]
-:服务端如何处理调用请求: link:dubbo-provider/服务端如何处理调用请求.adoc[服务端如何处理调用请求]
+:服务端启动过程: link:../dubbo-provider/服务端启动过程.adoc[服务端启动过程]
+:如何实现本地服务调用: link:../dubbo-provider/如何实现本地服务调用.adoc[如何实现本地服务调用]
+:服务端如何处理调用请求: link:../dubbo-provider/服务端如何处理调用请求.adoc[服务端如何处理调用请求]
 
 = 消费端启动过程
 
